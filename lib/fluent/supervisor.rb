@@ -566,6 +566,17 @@ module Fluent
       @pm = process_manager.spawn(env, *main_cmd)
     end
 
+    def before_fork
+      # ServerEngine's MultiSpawnServer does not apply any umask to spawned
+      # workers (unlike MultiProcessServer, which applies `worker_chumask`),
+      # so workers of a foreground supervisor inherit the shell's umask.
+      # Apply it here instead so that `--umask` / `<system> umask` also
+      # applies to files created by workers (e.g. file buffer chunks).
+      if chumask = config[:worker_chumask]
+        File.umask(chumask)
+      end
+    end
+
     def after_start
       (config[:worker_pid] ||= {})[@worker_id] = @pm.pid
     end
@@ -598,6 +609,11 @@ module Fluent
         chuser: params['chuser'],
         chgroup: params['chgroup'],
         chumask: params['chumask'].is_a?(Integer) ? params['chumask'] : params['chumask']&.to_i(8),
+        # `chumask` is applied by ServerEngine only when daemonizing. Pass
+        # `worker_chumask` as well so that Fluent::WorkerModule#before_fork can
+        # apply the umask to workers spawned by a foreground supervisor,
+        # which would otherwise inherit the shell's umask.
+        worker_chumask: params['chumask'].is_a?(Integer) ? params['chumask'] : params['chumask']&.to_i(8),
         daemonize: daemonize,
         rpc_endpoint: params['rpc_endpoint'],
         counter_server: params['counter_server'],

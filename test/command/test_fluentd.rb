@@ -1392,6 +1392,52 @@ CONF
     assert_equal "600", buffer_perm
   end
 
+  test "<system> umask is applied to the permission of generated buffer files under a foreground supervisor" do
+    omit "Windows doesn't support UNIX like permissions" if Fluent.windows?
+
+    buf_dir = File.join(@tmp_dir, "buffer")
+    # 0644 (DEFAULT_FILE_PERMISSION) masked by umask 0077 => 0600.
+    # Without `--no-supervisor`, the worker is spawned by a foreground
+    # supervisor, which does not inherit the umask through ServerEngine.
+    # It is applied by Fluent::WorkerModule#before_fork instead.
+    conf = <<CONF
+<system>
+  umask 0077
+</system>
+<source>
+  @type sample
+  tag test.umask
+  rate 100
+</source>
+<match test.umask>
+  @type null
+  <buffer>
+    @type file
+    path #{buf_dir}
+    flush_mode interval
+    flush_interval 3600s
+    chunk_limit_size 10m
+  </buffer>
+</match>
+CONF
+    conf_path = create_conf_file("system_umask_foreground.conf", conf)
+
+    buffer_file = nil
+    buffer_perm = nil
+    assert_log_matches(create_cmdline(conf_path), "fluentd worker is now running") do
+      waiting(10) do
+        until buffer_file
+          buffer_file = Dir.glob(File.join(buf_dir, "buffer.*.log")).first
+          sleep 0.1
+        end
+      end
+      buffer_perm = File.stat(buffer_file).mode.to_s(8)[-3, 3]
+    end
+
+    assert_not_nil buffer_file, "a staged buffer file should be generated"
+    assert_equal "600", buffer_perm
+  end
+
   sub_test_case "--with-source-only" do
     setup do
       omit "Not supported on Windows" if Fluent.windows?

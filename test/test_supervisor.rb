@@ -26,6 +26,14 @@ class SupervisorTest < ::Test::Unit::TestCase
     end
   end
 
+  class DummyWorker
+    include Fluent::WorkerModule
+    def initialize(worker_config)
+      @config = worker_config
+    end
+    attr_reader :config
+  end
+
   def tmp_dir
     File.join(File.dirname(__FILE__), "tmp", "supervisor#{ENV['TEST_ENV_NUMBER']}", SecureRandom.hex(10))
   end
@@ -689,6 +697,17 @@ class SupervisorTest < ::Test::Unit::TestCase
       assert_equal expected, se_config[:chumask]
     end
 
+    def test_worker_chumask
+      params = { "chumask" => "0077" }
+      load_config_proc = Proc.new { Fluent::Supervisor.serverengine_config(params) }
+
+      se_config = load_config_proc.call
+
+      # `worker_chumask` is used to apply the umask to workers spawned by a
+      # foreground supervisor, where ServerEngine doesn't apply `chumask`.
+      assert_equal 63, se_config[:worker_chumask]
+    end
+
     def test_parser_selection_options
       params = {}
       params['workers'] = 1
@@ -734,6 +753,23 @@ class SupervisorTest < ::Test::Unit::TestCase
     supervisor.configure(supervisor: true)
 
     supervisor.run_supervisor
+  end
+
+  data("umask set", [63, 63])
+  data("umask not set", [nil, :unchanged])
+  def test_worker_chumask_is_applied_in_worker_before_fork((worker_chumask, expected))
+    original_umask = File.umask
+
+    worker = DummyWorker.new({worker_chumask: worker_chumask})
+    worker.before_fork
+
+    if expected == :unchanged
+      assert_equal original_umask, File.umask
+    else
+      assert_equal expected, File.umask
+    end
+  ensure
+    File.umask(original_umask)
   end
 
   data("default", [{}, :guess])
