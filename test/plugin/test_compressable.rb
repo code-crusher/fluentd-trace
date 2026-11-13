@@ -1,5 +1,6 @@
 require_relative '../helper'
 require 'fluent/plugin/compressable'
+require 'fluent/plugin/extractor'
 
 class CompressableTest < Test::Unit::TestCase
   include Fluent::Plugin::Compressable
@@ -106,6 +107,20 @@ class CompressableTest < Test::Unit::TestCase
 
       decompress(input_io: input_io, output_io: output_io, type: :zstd)
       assert_equal src1 + src2 + src3, output_io.string
+    end
+
+    test 'compress and decompress zstd data larger than the size read at once' do
+      # Data large enough to be split into multiple reads on decompression
+      # (ZSTD_BYTES_TO_READ compressed bytes per read).
+      src = 'text data for compressing' * 10000
+      assert_operator src.bytesize, :>, Fluent::Plugin::Extractor::ZSTD_BYTES_TO_READ
+
+      compressed = compress(src, type: :zstd)
+      assert_equal src, decompress(compressed, type: :zstd)
+
+      output_io = StringIO.new
+      decompress(compressed, output_io: output_io, type: :zstd)
+      assert_equal src, output_io.string
     end
   end
 end

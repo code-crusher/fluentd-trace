@@ -415,11 +415,7 @@ class FileOutputTest < Test::Unit::TestCase
       }
     elsif type == :zstd
       File.open(path, "rb") { |io|
-        loop do
-          reader = Zstd::StreamReader.new(StringIO.new(io.read))
-          result << reader.read(1024)
-          break if io.eof?
-        end
+        result << Zstd::StreamingDecompress.new.decompress(io.read)
       }
     else
       raise "Invalid compression type to check"

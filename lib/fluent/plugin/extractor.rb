@@ -26,9 +26,8 @@ module Fluent
 
       BYTES_TO_READ = 64 * 1024
       INFLATE_BYTES_TO_READ = 1024
-      # Zstd::StreamReader#read takes a number of compressed bytes, unlike
-      # Zlib::GzipReader#read which takes decompressed bytes
-      ZSTD_BYTES_TO_READ = 1024
+      # The number of compressed bytes to read at once when decompressing zstd data.
+      ZSTD_BYTES_TO_READ = 64 * 1024
 
       def self.decompress_gzip(compressed_data, limit:)
         io = StringIO.new(compressed_data)
@@ -54,17 +53,21 @@ module Fluent
       end
 
       def self.decompress_zstd(compressed_data, limit:)
-        io = StringIO.new(compressed_data)
-        reader = Zstd::StreamReader.new(io)
-        out = ''
-        loop do
-          out << reader.read(ZSTD_BYTES_TO_READ)
+        # Do not use Zstd::StreamReader: the streaming feature of zstd-ruby is
+        # experimental and had some problems (https://github.com/fluent/fluentd/issues/5111).
+        # Zstd::StreamingDecompress#decompress handles concatenated frames correctly
+        # and it does not buffer the decompressed data internally.
+        decompressor = Zstd::StreamingDecompress.new
+        out = +''.force_encoding(Encoding::ASCII_8BIT)
+        offset = 0
+        while offset < compressed_data.bytesize
+          chunk = decompressor.decompress(compressed_data.byteslice(offset, ZSTD_BYTES_TO_READ))
+          offset += ZSTD_BYTES_TO_READ
+          next if chunk.empty?
+          out << chunk
           if out.bytesize > limit
             raise SizeLimitError, "Decompressed data exceeds limit of #{limit} bytes"
           end
-
-          # Zstd::StreamReader doesn't provide unused data, so we have to manually adjust the position
-          break if io.eof?
         end
         out
       end
@@ -113,17 +116,18 @@ module Fluent
       end
 
       def self.io_decompress_zstd(input, output, limit:)
-        reader = Zstd::StreamReader.new(input)
+        decompressor = Zstd::StreamingDecompress.new
         size = 0
         loop do
-          chunk = reader.read(ZSTD_BYTES_TO_READ)
+          compressed_chunk = input.read(ZSTD_BYTES_TO_READ)
+          break if compressed_chunk.nil?
+          chunk = decompressor.decompress(compressed_chunk)
+          next if chunk.empty?
           size += chunk.bytesize
           if size > limit
             raise SizeLimitError, "Decompressed data exceeds limit of #{limit} bytes"
           end
           output.write(chunk)
-          # Zstd::StreamReader doesn't provide unused data, so we have to manually adjust the position
-          break if input.eof?
         end
         output
       end

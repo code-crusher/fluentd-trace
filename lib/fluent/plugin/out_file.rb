@@ -272,14 +272,16 @@ module Fluent::Plugin
 
     def write_with_compression(type, path, chunk)
       File.open(path, "ab", @file_perm) do |f|
-        gz = nil
         if type == :gzip
           gz = Zlib::GzipWriter.new(f)
+          chunk.write_to(gz, compressed: :text)
+          gz.close
         elsif type == :zstd
-          gz = Zstd::StreamWriter.new(f)
+          # Do not use Zstd::StreamWriter: the streaming feature of zstd-ruby is
+          # experimental and had some problems (https://github.com/fluent/fluentd/issues/5111).
+          # One-shot compression is enough for our use case.
+          f << Zstd.compress(chunk.read)
         end
-        chunk.write_to(gz, compressed: :text)
-        gz.close
       end
     end
 

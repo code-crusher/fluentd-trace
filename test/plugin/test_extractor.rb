@@ -82,6 +82,17 @@ class ExtractorTest < Test::Unit::TestCase
       end
       assert_equal "Decompressed data exceeds limit of #{@strict_limit} bytes", err.message
     end
+
+    test 'decompresses a frame written by the streaming writer (compatibility with old chunks)' do
+      # Frames written by Zstd::StreamWriter (used until v1.x) must still be
+      # decompressable. https://github.com/fluent/fluentd/issues/5111
+      io = StringIO.new
+      writer = Zstd::StreamWriter.new(io)
+      writer.write(@original_text)
+      writer.finish
+      result = Fluent::Plugin::Extractor.decompress_zstd(io.string, limit: @safe_limit)
+      assert_equal @original_text, result
+    end
   end
 
   sub_test_case 'decompress_deflate' do
@@ -159,11 +170,10 @@ class ExtractorTest < Test::Unit::TestCase
     end
 
     test 'counts the size across zstd members' do
-      # each member must be larger than ZSTD_BYTES_TO_READ compressed and smaller than the limit
-      # decompressed, so that the limit can only be reached by accumulating across members
+      # each member must be smaller than the limit decompressed, so that the
+      # limit can only be reached by accumulating across members
       member = incompressible_text(2048)
       compressed = create_multi_zstd(member, member)
-      assert_operator Zstd.compress(member).bytesize, :>, Fluent::Plugin::Extractor::ZSTD_BYTES_TO_READ
 
       input = StringIO.new(compressed)
       output = StringIO.new

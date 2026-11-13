@@ -29,13 +29,16 @@ module Fluent
         io = output_io || StringIO.new
         if type == :gzip
           writer = Zlib::GzipWriter.new(io)
+          writer.write(data)
+          writer.finish
         elsif type == :zstd
-          writer = Zstd::StreamWriter.new(io)
+          # Do not use Zstd::StreamWriter: the streaming feature of zstd-ruby is
+          # experimental and had some problems (https://github.com/fluent/fluentd/issues/5111).
+          # One-shot compression is enough for our use case.
+          io << Zstd.compress(data)
         else
           raise ArgumentError, "Unknown compression type: #{type}"
         end
-        writer.write(data)
-        writer.finish
         output_io || io.string
       end
 

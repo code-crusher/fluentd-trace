@@ -256,11 +256,9 @@ module Fluent
           def append(data, **kwargs)
             if kwargs[:compress] == :zstd
               io = StringIO.new
-              stream = Zstd::StreamWriter.new(io)
               data.each do |d|
-                stream.write(d)
+                io << Zstd.compress(d)
               end
-              stream.finish
               concat(io.string, data.size)
             else
               super
