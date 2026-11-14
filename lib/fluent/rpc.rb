@@ -14,10 +14,21 @@
 #    limitations under the License.
 #
 
-require 'webrick'
+require 'async'
+require 'async/http'
+require 'async/http/endpoint'
+require 'uri'
+
+require 'fluent/log/console_adapter'
 
 module Fluent
   module RPC
+    # RPC server implementation based on async-http.
+    #
+    # This is used by the supervisor's `rpc_endpoint` and is the replacement
+    # for the previous WEBrick based implementation. WEBrick is no longer
+    # recommended for production use, so the RPC server has been migrated to
+    # the same async-http stack that the `http_server` plugin helper uses.
     class Server
       def initialize(endpoint, log)
         m = endpoint.match(/^\[?(?<host>[0-9a-zA-Z:\-\.]+)\]?:(?<port>[0-9]+)$/)
@@ -26,68 +37,82 @@ module Fluent
         @port = m[:port]
         @log = log
 
-        @server = WEBrick::HTTPServer.new(
-          BindAddress: @bind,
-          Port: @port,
-          Logger: WEBrick::Log.new(STDERR, WEBrick::Log::FATAL),
-          AccessLog: [],
-        )
+        # Normalize the address for the async-http endpoint.
+        # Brackets are only for URI formatting, not for socket binding.
+        addr = if @bind.start_with?('[') && @bind.end_with?(']')
+                 @bind[1..-2]
+               else
+                 @bind
+               end
+        ip_literal = addr.include?(":") ? "[#{addr}]" : addr
+        @uri = URI("http://#{ip_literal}:#{@port}").to_s
+        @router = {}
+        @server_task_queue = ::Thread::Queue.new
+        Console.logger = Fluent::Log::ConsoleAdapter.wrap(@log)
+
+        @server = Async::HTTP::Server.new(App.new(self, @log), Async::HTTP::Endpoint.parse(@uri))
       end
 
+      # Kept for compatibility with the old WEBrick based API, where a servlet
+      # class with a `#service` method could be mounted. The current RPC
+      # handlers are all mounted with #mount_proc, so this raises a clear error
+      # if a servlet class is mounted instead.
       def mount(path, servlet, *args)
-        @server.mount(path, servlet, *args)
-        @log.debug "register #{path} RPC servlet"
+        raise ArgumentError, "RPC server no longer supports mounting servlet classes"
       end
 
       def mount_proc(path, &block)
-        @server.mount_proc(path) { |req, res|
-          begin
-            code, header, response = block.call(req, res)
-          rescue => e
-            @log.warn "failed to handle RPC request", path: path, error: e.to_s
-            @log.warn_backtrace e.backtrace
-
-            code = 500
-            body = {
-              'message '=> 'Internal Server Error',
-              'error' => "#{e}",
-              'backtrace'=> e.backtrace,
-            }
-          end
-
-          code = 200 if code.nil?
-          header = {'Content-Type' => 'application/json'} if header.nil?
-          body = if response.nil?
-                   '{"ok":true}'
-                 else
-                   response.body['ok'] = code == 200
-                   response.body.to_json
-                 end
-
-          res.status = code
-          header.each_pair { |k, v|
-            res[k] = v
-          }
-          res.body = body
-        }
+        @router[path] = block
         @log.debug "register #{path} RPC handler"
       end
 
       def start
         @log.debug "listening RPC http server on http://#{@bind}:#{@port}/"
         @thread = Thread.new {
-          @server.start
+          Async do |task|
+            Console.logger = Fluent::Log::ConsoleAdapter.wrap(@log)
+            begin
+              @server.endpoint.accept(&@server.method(:accept))
+              @server_task_queue.pop
+            rescue => e
+              @log.error "failed to run RPC server", error: e.to_s
+            ensure
+              task.children&.each(&:stop)
+            end
+          end
         }
       end
 
       def shutdown
         if @server
-          @server.shutdown
+          @server_task_queue.push(:stop)
           @server = nil
         end
         if @thread
           @thread.join
           @thread = nil
+        end
+      end
+
+      # App is a rack-like application passed to Async::HTTP::Server.
+      class App
+        def initialize(server, logger)
+          @server = server
+          @logger = logger
+        end
+
+        def call(request)
+          handler = @server.instance_variable_get(:@router)[request.path]
+          if handler
+            status, headers, body = handler.call(request, nil)
+            [status, headers, body]
+          else
+            [404, { 'Content-Type' => 'text/plain' }, "404 Not Found\n"]
+          end
+        rescue => e
+          @logger.error "failed to handle RPC request", error: e.to_s
+          @logger.error e.backtrace.join("\n") if e.backtrace
+          [500, { 'Content-Type' => 'text/plain' }, "500 Internal Server Error\n"]
         end
       end
     end
