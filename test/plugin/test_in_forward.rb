@@ -578,6 +578,80 @@ class ForwardInputTest < Test::Unit::TestCase
     end
   end
 
+  sub_test_case 'fuzz' do
+    # The entries/option of a packed forward message come from the network.
+    # The event stream created from them must not raise, whatever the option
+    # contains. Regression tests for malformed packed forward options.
+    test 'packed forward with malformed option does not raise' do
+      @d = d = create_driver
+
+      time = event_time("2011-01-02 13:14:15 UTC")
+      time_i = time.to_i
+      entries = [time_i, {"a" => 1}].to_msgpack
+
+      options = [
+        nil,
+        123,
+        "text",
+        [1, 2],
+        {"size" => "not a number"},
+        {"size" => -1},
+        {"size" => 2**64 - 1},
+        {"size" => nil},
+        {"size" => 1.5},
+        {"size" => true},
+        {"compressed" => 1},
+        {"compressed" => true},
+        {"compressed" => nil},
+        {"compressed" => ["gzip"]},
+        {"compressed" => {}},
+        {"compressed" => "text"},
+        {"compressed" => :text},
+        {"fluent_signal" => "not-an-integer"},
+        {"fluent_signal" => 0},
+      ]
+
+      d.run(expect_records: options.size, timeout: 20) do
+        options.each do |option|
+          chunk = option.nil? ? ["tag1", entries] : ["tag1", entries, option]
+          Fluent::MessagePackFactory.msgpack_unpacker.feed_each(chunk.to_msgpack) do |obj|
+            d.instance.send(:on_message, obj, 1024, DUMMY_SOCK)
+          end
+        end
+      end
+
+      assert_equal options.size, d.events.size
+      assert(d.events.all? { |(tag, _time, record)| tag == "tag1" && record == {"a" => 1} })
+    end
+
+    test 'packed forward with malformed entries does not raise' do
+      @d = d = create_driver
+
+      malformed_entries = [
+        # not msgpack at all
+        "\xff\xfe\xfd".b,
+        # truncated msgpack array
+        [0x92, 0xa1, 0x61].pack("C*"),
+        # msgpack array with garbage content (valid container, invalid fields)
+        "\x92\xa1a\x81\xa4time\xce\xff\xff\xff\xff".b,
+        # non-hash record inside the msgpack array
+        "\x92\x01\xa3foo".b,
+      ]
+
+      d.run(timeout: 20) do
+        malformed_entries.each do |entries|
+          chunk = ["tag1", entries].to_msgpack
+          Fluent::MessagePackFactory.msgpack_unpacker.feed_each(chunk) do |obj|
+            d.instance.send(:on_message, obj, chunk.size, DUMMY_SOCK)
+          end
+        end
+      end
+
+      # Garbage entries must not be emitted as events
+      assert_equal 0, d.events.size
+    end
+  end
+
   sub_test_case 'compressed packed forward' do
     test 'metadata attached logs type without skip_invalid_event' do
       @d = d = create_driver(base_config + "skip_invalid_event false")

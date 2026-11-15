@@ -318,14 +318,17 @@ module Fluent::Plugin
       case entries
       when String
         # PackedForward
-        option = msg[2] || {}
-        size = option[OPTION_SIZE] || 0
+        option = msg[2]
+        option = {} unless option.is_a?(Hash)
+        size = option[OPTION_SIZE]
+        size = 0 unless size.is_a?(Integer)
+        size = 0 if size < 0
         compressed = option[OPTION_COMPRESSED]
 
-        if compressed && compressed != OPTION_TEXT
-          es = Fluent::CompressedMessagePackEventStream.new(entries, nil, size.to_i, compress: compressed.to_sym, decompression_size_limit: @decompression_size_limit)
+        if (compressed.is_a?(String) || compressed.is_a?(Symbol)) && compressed.to_s != OPTION_TEXT
+          es = Fluent::CompressedMessagePackEventStream.new(entries, nil, size, compress: compressed.to_sym, decompression_size_limit: @decompression_size_limit)
         else
-          es = Fluent::MessagePackEventStream.new(entries, nil, size.to_i)
+          es = Fluent::MessagePackEventStream.new(entries, nil, size)
         end
         if @skip_invalid_event
           es = normalize_event_stream(tag, es, conn.remote_host)
