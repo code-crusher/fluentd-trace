@@ -42,6 +42,10 @@ module Fluent::Plugin
     config_param :backlog, :integer, default: nil
     desc "New tag instead of incoming tag"
     config_param :tag, :string, default: nil
+    desc 'The permission (mode) of the socket file.'
+    config_param :perm, default: 0777 do |v|
+      v.to_i(8)
+    end
 
     def configure(conf)
       super
@@ -73,6 +77,7 @@ module Fluent::Plugin
       log.info "listening fluent socket on #{@path}"
       s = Coolio::UNIXServer.new(@path, Handler, log, method(:on_message))
       s.listen(@backlog) unless @backlog.nil?
+      File.chmod(@perm, @path)
       s
     end
 

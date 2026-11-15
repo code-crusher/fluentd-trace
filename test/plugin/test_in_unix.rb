@@ -43,6 +43,35 @@ class UnixInputTest < Test::Unit::TestCase
     @d = create_driver
     assert_equal "#{TMP_DIR}/unix", @d.instance.path
     assert_equal 1000, @d.instance.backlog
+    assert_equal 0o777, @d.instance.perm
+  end
+
+  def test_configure_with_custom_perm
+    @d = create_driver(CONFIG + "perm 0777")
+    assert_equal 0o777, @d.instance.perm
+  end
+
+  def test_socket_file_permission
+    @d = create_driver(CONFIG + "perm 0777")
+    @d.run(timeout: 5)
+
+    assert_true File.exist?("#{TMP_DIR}/unix")
+    assert_equal 0o777, File.stat("#{TMP_DIR}/unix").mode & 0o777
+  end
+
+  def test_socket_file_permission_ignores_umask
+    @d = create_driver(CONFIG + "perm 0777")
+
+    saved_umask = File.umask
+    File.umask(0o077)
+    begin
+      @d.run(timeout: 5)
+    ensure
+      File.umask(saved_umask)
+    end
+
+    assert_true File.exist?("#{TMP_DIR}/unix")
+    assert_equal 0o777, File.stat("#{TMP_DIR}/unix").mode & 0o777
   end
 
   def test_time
