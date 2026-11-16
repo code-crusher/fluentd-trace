@@ -20,7 +20,9 @@ module Fluent::Plugin
   class TailInput < Fluent::Plugin::Input
     class PositionFile
       UNWATCHED_POSITION = 0xffffffffffffffff
-      POSITION_FILE_ENTRY_REGEX = /^([^\t]+)\t([0-9a-fA-F]+)\t([0-9a-fA-F]+)/.freeze
+      # The device column is optional because position files written by older
+      # versions of Fluentd do not have it.
+      POSITION_FILE_ENTRY_REGEX = /^([^\t]+)\t([0-9a-fA-F]+)\t([0-9a-fA-F]+)(?:\t([0-9a-fA-F]+))?/.freeze
 
       def self.load(file, follow_inodes, existing_targets, logger:)
         pf = new(file, follow_inodes, logger: logger)
@@ -37,19 +39,17 @@ module Fluent::Plugin
       end
 
       def [](target_info)
-        if m = @map[@follow_inodes ? target_info.ino : target_info.path]
+        key = target_info.position_key(@follow_inodes)
+        if m = @map[key]
           return m
         end
 
         @file_mutex.synchronize {
           @file.seek(0, IO::SEEK_END)
           seek = @file.pos + target_info.path.bytesize + 1
-          @file.write "#{target_info.path}\t0000000000000000\t0000000000000000\n"
-          if @follow_inodes
-            @map[target_info.ino] = FilePositionEntry.new(@file, @file_mutex, seek, 0, 0)
-          else
-            @map[target_info.path] = FilePositionEntry.new(@file, @file_mutex, seek, 0, 0)
-          end
+          dev = @follow_inodes ? target_info.dev : nil
+          @file.write Entry.new(target_info.path, 0, 0, seek, dev).to_entry_fmt
+          @map[key] = FilePositionEntry.new(@file, @file_mutex, seek, 0, 0)
         }
       end
 
@@ -62,7 +62,7 @@ module Fluent::Plugin
       end
 
       def unwatch(target_info)
-        unwatch_key(@follow_inodes ? target_info.ino : target_info.path)
+        unwatch_key(target_info.position_key(@follow_inodes))
       end
 
       def load(existing_targets = nil)
@@ -79,9 +79,12 @@ module Fluent::Plugin
             path = m[1]
             pos = m[2].to_i(16)
             ino = m[3].to_i(16)
+            dev = m[4]&.to_i(16)
             seek = @file.pos - line.bytesize + path.bytesize + 1
             if @follow_inodes
-              map[ino] = FilePositionEntry.new(@file, @file_mutex, seek, pos, ino)
+              # The device of an entry of a position file written by an older
+              # version is nil because it has no device column.
+              map[[ino, dev]] = FilePositionEntry.new(@file, @file_mutex, seek, pos, ino)
             else
               map[path] = FilePositionEntry.new(@file, @file_mutex, seek, pos, ino)
             end
@@ -163,12 +166,16 @@ module Fluent::Plugin
           path = m[1]
           pos = m[2].to_i(16)
           ino = m[3].to_i(16)
+          dev = m[4]&.to_i(16) if @follow_inodes
           if pos == UNWATCHED_POSITION
             @logger.debug "Remove unwatched line from pos_file: #{line}" if @logger
           else
             if @follow_inodes
-              @logger&.warn("#{path} (inode: #{ino}) already exists. use latest one: deleted #{entries[ino]}") if entries.include?(ino)
-              entries[ino] = Entry.new(path, pos, ino, file_pos + path.bytesize + 1)
+              # Inode numbers are unique only within a device, so entries of
+              # files on different devices can share one. See #4326.
+              key = [ino, dev]
+              @logger&.warn("#{path} (inode: #{ino}, device: #{dev}) already exists. use latest one: deleted #{entries[key]}") if entries.include?(key)
+              entries[key] = Entry.new(path, pos, ino, file_pos + path.bytesize + 1, dev)
             else
               @logger&.warn("#{path} already exists. use latest one: deleted #{entries[path]}") if entries.include?(path)
               entries[path] = Entry.new(path, pos, ino, file_pos + path.bytesize + 1)
@@ -181,17 +188,52 @@ module Fluent::Plugin
       end
 
       def remove_deleted_files_entries(existent_entries, existing_targets)
-        existent_entries.select { |path_or_ino|
-          existing_targets.key?(path_or_ino)
-        }
+        unless @follow_inodes
+          return existent_entries.select { |path, _| existing_targets.key?(path) }
+        end
+
+        # A position file written by an older version has no device column.
+        # Resolve the device of such an entry by the recorded path, or by an
+        # inode which is not shared by files on different devices, so that the
+        # position is kept after upgrading Fluentd.
+        targets_by_path = {}
+        targets_by_ino = Hash.new { |hash, ino| hash[ino] = [] }
+        existing_targets.each_value do |target|
+          targets_by_path[target.path] = target
+          targets_by_ino[target.ino] << target
+        end
+
+        entries = {}
+        existent_entries.each do |(ino, dev), entry|
+          if dev.nil?
+            # Resolve the device by the recorded path, or by an inode which is
+            # not shared by files on different devices.
+            target = targets_by_path[entry.path]
+            target = nil if target && target.ino != ino
+            if target.nil?
+              targets = targets_by_ino[ino]
+              target = targets.first if targets.size == 1
+            end
+            next if target.nil?
+            entry.dev = dev = target.dev
+          end
+          key = [ino, dev]
+          entries[key] = entry if existing_targets.key?(key)
+        end
+        entries
       end
     end
 
-    Entry = Struct.new(:path, :pos, :ino, :seek) do
+    Entry = Struct.new(:path, :pos, :ino, :seek, :dev) do
       POSITION_FILE_ENTRY_FORMAT = "%s\t%016x\t%016x\n".freeze
+      POSITION_FILE_ENTRY_WITH_DEVICE_FORMAT = "%s\t%016x\t%016x\t%016x\n".freeze
 
       def to_entry_fmt
-        POSITION_FILE_ENTRY_FORMAT % [path, pos, ino]
+        if dev
+          POSITION_FILE_ENTRY_WITH_DEVICE_FORMAT % [path, pos, ino, dev]
+        else
+          POSITION_FILE_ENTRY_FORMAT % [path, pos, ino]
+        end
       end
     end
 
@@ -264,6 +306,13 @@ module Fluent::Plugin
       end
     end
 
-    TargetInfo = Struct.new(:path, :ino)
+    TargetInfo = Struct.new(:path, :ino, :dev) do
+      # The key of the position entry of this target. When following inodes,
+      # the pair of inode and device identifies a file because inode numbers
+      # are unique only within one device. See #4326.
+      def position_key(follow_inodes)
+        follow_inodes ? [ino, dev] : path
+      end
+    end
   end
 end

@@ -141,9 +141,12 @@ module Fluent::Plugin
           # Even we just checked for existence, there is a race condition here as
           # of which stat() might fail with ENOENT. See #3224.
           begin
-            target_info = TargetInfo.new(path, Fluent::FileWrapper.stat(path).ino)
+            stat = Fluent::FileWrapper.stat(path)
+            target_info = TargetInfo.new(path, stat.ino, stat.dev)
             if @follow_inodes
-              hash[target_info.ino] = target_info
+              # Inode numbers are unique only within a device, so files on
+              # different devices can share one. See #4326.
+              hash[target_info.position_key(@follow_inodes)] = target_info
             else
               hash[target_info.path] = target_info
             end
@@ -157,10 +160,11 @@ module Fluent::Plugin
       def existence_path
         hash = {}
         @tails.each {|path, tw|
+          target_info = TargetInfo.new(tw.path, tw.ino, tw.dev)
           if @follow_inodes
-            hash[tw.ino] = TargetInfo.new(tw.path, tw.ino)
+            hash[target_info.position_key(@follow_inodes)] = target_info
           else
-            hash[tw.path] = TargetInfo.new(tw.path, tw.ino)
+            hash[tw.path] = target_info
           end
         }
         hash
@@ -198,8 +202,8 @@ module Fluent::Plugin
 
         if @follow_inodes
           # A TailWatcher waiting for `rotate_wait` still reads its inode, so do not start a second one for it.
-          @tails_rotate_wait.each_value do |v|
-            target = added_hash.delete(v[:ino])
+          @tails_rotate_wait.each do |tw, v|
+            target = added_hash.delete(TargetInfo.new(tw.path, v[:ino], tw.dev).position_key(@follow_inodes))
             log.debug { "skip #{target.path} (inode: #{target.ino}) because a watcher waiting rotate_wait still reads it" } if target
           end
         end
@@ -242,12 +246,16 @@ module Fluent::Plugin
       # early would let its watcher write into another file's line.
       def unwatch_removed_inodes(target_paths_hash)
         return unless @pf
-        draining_hash = @tails_rotate_wait.to_h { |tw, v| [v[:ino], TargetInfo.new(tw.path, v[:ino])] }
+        draining_hash = @tails_rotate_wait.to_h { |tw, v|
+          target = TargetInfo.new(tw.path, v[:ino], tw.dev)
+          [target.position_key(@follow_inodes), target]
+        }
         @worker_detached_watchers&.each do |tw|
-          draining_hash[tw.ino] = TargetInfo.new(tw.path, tw.ino)
+          target = TargetInfo.new(tw.path, tw.ino, tw.dev)
+          draining_hash[target.position_key(@follow_inodes)] = target
         end
         @worker_deferred_unwatch&.each_value do |target|
-          draining_hash[target.ino] = target
+          draining_hash[target.position_key(@follow_inodes)] = target
         end
         @pf.unwatch_removed_targets(draining_hash.merge(target_paths_hash))
       end

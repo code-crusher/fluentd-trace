@@ -25,6 +25,7 @@ module Fluent::Plugin
       def initialize(target_info, pe, log, read_from_head, follow_inodes, update_watcher, file_feed, io_handler_build, metrics)
         @path = target_info.path
         @ino = target_info.ino
+        @dev = target_info.dev
         @pe = pe || MemoryPositionEntry.new
         @read_from_head = read_from_head
         @follow_inodes = follow_inodes
@@ -40,7 +41,7 @@ module Fluent::Plugin
         @close_pending = false
       end
 
-      attr_reader :path, :ino
+      attr_reader :path, :ino, :dev
 
       def detached?
         @detached
@@ -157,7 +158,9 @@ module Fluent::Plugin
             inode = stat.ino
 
             last_inode = @pe.read_inode
-            if inode == last_inode
+            # Inode numbers are unique only within a device, so the same inode
+            # on another device is a different file. See #4326.
+            if inode == last_inode && (@dev.nil? || stat.dev == @dev)
               # rotated file has the same inode number with the last file.
               # assuming following situation:
               #   a) file was once renamed and backed, or
@@ -179,6 +182,7 @@ module Fluent::Plugin
               pos = @read_from_head ? 0 : fsize
               @pe.update(inode, pos)
             end
+            @dev = stat.dev
             @io_handler = io_handler
           else
             @io_handler = NullIOHandler.new
@@ -188,11 +192,12 @@ module Fluent::Plugin
 
           if stat
             inode = stat.ino
-            if inode == @pe.read_inode # truncated
+            if inode == @pe.read_inode && (@dev.nil? || stat.dev == @dev) # truncated
               @pe.update_pos(0)
               @io_handler.close
             elsif !@io_handler.opened? # There is no previous file. Reuse TailWatcher
               @pe.update(inode, 0)
+              @dev = stat.dev
             else # file is rotated and new file found
               watcher_needs_update = true
               # Handle the old log file before renewing TailWatcher [fluentd#1055]
@@ -213,14 +218,14 @@ module Fluent::Plugin
               #   If a notify comes before the new file for the path is created during rotation,
               #   then it appears as if the file was resurrected once it disappeared.
               # Don't want to swap state because we need latest read offset in pos file even after rotate_wait
-              @update_watcher.call(self, @pe, stat&.ino)
+              @update_watcher.call(self, @pe, stat&.ino, stat&.dev)
             else
               # Permit to handle if stat is nil (file not present).
               # If a file is mv-ed and a new file is created during
               # calling `#refresh_watchers`s, and `#refresh_watchers` won't run `#start_watchers`
               # and `#stop_watchers()` for the path because `target_paths_hash`
               # always contains the path.
-              @update_watcher.call(self, swap_state(@pe), stat&.ino)
+              @update_watcher.call(self, swap_state(@pe), stat&.ino, stat&.dev)
             end
           else
             @log.info "detected rotation of #{@path}"
@@ -248,6 +253,7 @@ module Fluent::Plugin
         def initialize(log, &on_rotate)
           @log = log
           @inode = nil
+          @dev = nil
           @fsize = -1  # first
           @on_rotate = on_rotate
         end
@@ -255,16 +261,21 @@ module Fluent::Plugin
         def on_notify(stat)
           if stat.nil?
             inode = nil
+            dev = nil
             fsize = 0
           else
             inode = stat.ino
+            dev = stat.dev
             fsize = stat.size
           end
 
-          if @inode != inode || fsize < @fsize
+          # Inode numbers are unique only within a device, so a file replaced
+          # by one on another device can share the inode. See #4326.
+          if @inode != inode || @dev != dev || fsize < @fsize
             @on_rotate.call(stat)
           end
           @inode = inode
+          @dev = dev
           @fsize = fsize
         rescue
           @log.error $!.to_s

@@ -430,7 +430,9 @@ module Fluent::Plugin
 
       # The file might be rotated or removed after collecting paths, so check inode again here.
       begin
-        target_info.ino = Fluent::FileWrapper.stat(path).ino
+        stat = Fluent::FileWrapper.stat(path)
+        target_info.ino = stat.ino
+        target_info.dev = stat.dev
       rescue Errno::ENOENT, Errno::EACCES
         log.warn "stat() for #{path} failed. Continuing without tailing it."
         return
@@ -496,16 +498,16 @@ module Fluent::Plugin
       end
     end
 
-    def update_watcher(tail_watcher, pe, new_inode)
+    def update_watcher(tail_watcher, pe, new_inode, new_dev = nil)
       @watcher_refresh_monitor.synchronize do
         return if @shutdown_start_time
 
-        update_watcher_raw(tail_watcher, pe, new_inode)
+        update_watcher_raw(tail_watcher, pe, new_inode, new_dev)
       end
     end
 
     # refresh_watchers calls @tails.keys so we don't use stop_watcher -> start_watcher sequence for safety.
-    def update_watcher_raw(tail_watcher, pe, new_inode)
+    def update_watcher_raw(tail_watcher, pe, new_inode, new_dev = nil)
       # TODO we should use another callback for this.
       # To suppress impact to existing logics, limit the case to `@follow_inodes`.
       # We may not need `@follow_inodes` condition.
@@ -522,7 +524,7 @@ module Fluent::Plugin
 
       if @pf
         pe_inode = pe.read_inode
-        target_info_from_position_entry = TargetInfo.new(path, pe_inode)
+        target_info_from_position_entry = TargetInfo.new(path, pe_inode, tail_watcher.dev)
         unless pe_inode == @pf[target_info_from_position_entry].read_inode
           log.warn "Skip update_watcher because watcher has been already updated by other inotify event",
                    path: path, inode: pe.read_inode, inode_in_pos_file: @pf[target_info_from_position_entry].read_inode
@@ -530,7 +532,7 @@ module Fluent::Plugin
         end
       end
 
-      new_target_info = TargetInfo.new(path, new_inode)
+      new_target_info = TargetInfo.new(path, new_inode, new_dev)
 
       if @follow_inodes
         new_position_entry = @pf[new_target_info]
@@ -572,7 +574,7 @@ module Fluent::Plugin
       tw.group_watcher&.delete(tw.path, tw)
 
       if @pf && tw.unwatched && (@follow_inodes || !@tails[tw.path])
-        target_info = TargetInfo.new(tw.path, ino)
+        target_info = TargetInfo.new(tw.path, ino, tw.dev)
         if defer_worker_completion
           @worker_deferred_unwatch[tw] = target_info
         else

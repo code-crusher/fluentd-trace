@@ -44,7 +44,8 @@ class TailInputTest < Test::Unit::TestCase
   end
 
   def create_target_info(path)
-    Fluent::Plugin::TailInput::TargetInfo.new(path, Fluent::FileWrapper.stat(path).ino)
+    stat = Fluent::FileWrapper.stat(path)
+    Fluent::Plugin::TailInput::TargetInfo.new(path, stat.ino, stat.dev)
   end
 
   ROOT_CONFIG = config_element("ROOT", "", {
@@ -2797,8 +2798,8 @@ class TailInputTest < Test::Unit::TestCase
 
     Timecop.freeze(2010, 1, 2, 3, 4, 6) do
       path = "test/plugin/data/2010/01/20100102-030406.log"
-      inode = Fluent::FileWrapper.stat(path).ino
-      target_info = Fluent::Plugin::TailInput::TargetInfo.new(path, inode)
+      stat = Fluent::FileWrapper.stat(path)
+      target_info = Fluent::Plugin::TailInput::TargetInfo.new(path, stat.ino, stat.dev)
       mock.proxy(Fluent::Plugin::TailInput::TailWatcher).new(target_info, anything, anything, true, false, anything, anything, anything, anything).once
       plugin.refresh_watchers
 
@@ -2864,6 +2865,52 @@ class TailInputTest < Test::Unit::TestCase
   end
 
   sub_test_case 'inode_processing' do
+    # Inode numbers are unique only within a device, so files on different
+    # devices can share one. Both files must be tailed with `follow_inodes`.
+    # (See https://github.com/fluent/fluentd/issues/4326)
+    def test_should_tail_files_with_same_inode_on_different_devices
+      paths = %w[device_a.log device_b.log].map { |name| "#{@tmp_dir}/#{name}" }
+      paths.each { |path| Fluent::FileWrapper.open(path, "wb") { |f| f.puts File.basename(path) } }
+
+      # Same inode number on two different block devices.
+      ino = 0x4326
+      stats = paths.each_with_index.to_h do |path, index|
+        stat = File.stat(path)
+        stat.define_singleton_method(:ino) { ino }
+        stat.define_singleton_method(:dev) { index + 1 }
+        [path, stat]
+      end
+      original_stat = Fluent::FileWrapper.method(:stat)
+      stub(Fluent::FileWrapper).stat(anything) do |path|
+        stats.fetch(path) { original_stat.call(path) }
+      end
+
+      config = config_element("ROOT", "", {
+        "path" => "#{@tmp_dir}/*.log",
+        "pos_file" => "#{@tmp_dir}/tail.pos",
+        "tag" => "t1",
+        "format" => "none",
+        "read_from_head" => "true",
+        "follow_inodes" => "true",
+        "refresh_interval" => "1h",
+        "enable_stat_watcher" => "false",
+      })
+      d = create_driver(config, false)
+      d.run(expect_records: 2, timeout: 10, shutdown: false)
+
+      assert_equal(2, d.instance.instance_variable_get(:@tails).size)
+      assert_equal(paths.map { |path| File.basename(path) }, d.events.map { |event| event[2]["message"] }.sort)
+
+      # Each file must have its own position entry, distinguished by the device.
+      entries = Fluent::FileWrapper.open("#{@tmp_dir}/tail.pos", "r") { |f| f.readlines(chomp: true) }
+      assert_equal(
+        paths.map { |path| [path, ino, stats[path].dev] },
+        entries.map { |line| line.split("\t").values_at(0, 2, 3).map.with_index { |v, i| i.zero? ? v : v.to_i(16) } }.sort
+      )
+    ensure
+      d.instance_shutdown if d&.instance
+    end
+
     def test_should_delete_file_pos_entry_for_non_existing_file_with_follow_inodes
       config = common_follow_inode_config
 
@@ -2934,7 +2981,7 @@ class TailInputTest < Test::Unit::TestCase
 
         assert_equal(
           {
-            map_keys: [current_tw.ino],
+            map_keys: [[current_tw.ino, current_tw.dev]],
             unwatched_pe_pos: Fluent::Plugin::TailInput::PositionFile::UNWATCHED_POSITION,
           },
           {
@@ -2996,7 +3043,7 @@ class TailInputTest < Test::Unit::TestCase
         assert_true closed
         assert_true tw.eof?
         assert_equal Fluent::Plugin::TailInput::PositionFile::UNWATCHED_POSITION, pe.read_pos
-        assert_false pf.instance_variable_get(:@map).key?(ino)
+        assert_false pf.instance_variable_get(:@map).key?(target_info.position_key(true))
       end
 
       d.instance_shutdown

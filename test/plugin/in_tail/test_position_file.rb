@@ -26,8 +26,8 @@ class IntailPositionFileTest < Test::Unit::TestCase
     "inode23bit" => Fluent::Plugin::TailInput::TargetInfo.new("inode23bit", 0),
   }
   TEST_CONTENT_INODES = {
-    1 => Fluent::Plugin::TailInput::TargetInfo.new("valid_path", 1),
-    0 => Fluent::Plugin::TailInput::TargetInfo.new("inode23bit", 0),
+    [1, nil] => Fluent::Plugin::TailInput::TargetInfo.new("valid_path", 1),
+    [0, nil] => Fluent::Plugin::TailInput::TargetInfo.new("inode23bit", 0),
   }
 
   def write_data(f, content)
@@ -174,6 +174,35 @@ class IntailPositionFileTest < Test::Unit::TestCase
       lines = @file.readlines
       assert_equal "valid_path\t0000000000000003\t0000000000000004\n", lines[0]
     end
+
+    test 'keep entries of files with the same inode on different devices' do
+      write_data(@file, <<~EOF)
+        path_on_dev1\t0000000000000002\t0000000000000001\t000000000000000a
+        path_on_dev2\t0000000000000003\t0000000000000001\t000000000000000b
+      EOF
+      targets = {
+        [1, 0xa] => Fluent::Plugin::TailInput::TargetInfo.new("path_on_dev1", 1, 0xa),
+        [1, 0xb] => Fluent::Plugin::TailInput::TargetInfo.new("path_on_dev2", 1, 0xb),
+      }
+      pf = Fluent::Plugin::TailInput::PositionFile.load(@file, true, targets, **{logger: $log})
+
+      assert_equal(2, pf.instance_variable_get(:@map).size)
+      assert_equal(2, pf[targets[[1, 0xa]]].read_pos)
+      assert_equal(3, pf[targets[[1, 0xb]]].read_pos)
+    end
+
+    test 'keep the position of an entry written by an older version' do
+      # A position file written by an older version has no device column.
+      write_data(@file, <<~EOF)
+        legacy_path\t0000000000000002\t0000000000000001
+      EOF
+      target = Fluent::Plugin::TailInput::TargetInfo.new("legacy_path", 1, 0xa)
+      pf = Fluent::Plugin::TailInput::PositionFile.load(@file, true, { [1, 0xa] => target }, **{logger: $log})
+
+      assert_equal(2, pf[target].read_pos)
+      @file.seek(0)
+      assert_equal("legacy_path\t0000000000000002\t0000000000000001\t000000000000000a\n", @file.readline)
+    end
   end
 
   sub_test_case '#[]' do
@@ -247,16 +276,16 @@ class IntailPositionFileTest < Test::Unit::TestCase
       write_data(@file, TEST_CONTENT)
       pf = Fluent::Plugin::TailInput::PositionFile.load(@file, true, TEST_CONTENT_INODES, logger: $log)
 
-      existing_targets = TEST_CONTENT_INODES.select do |inode, target_info|
+      existing_targets = TEST_CONTENT_INODES.select do |(inode, _dev), target_info|
         inode == 1
       end
-      pe_to_unwatch = pf[TEST_CONTENT_INODES[0]]
+      pe_to_unwatch = pf[TEST_CONTENT_INODES[[0, nil]]]
 
       pf.unwatch_removed_targets(existing_targets)
 
       assert_equal(
         {
-          map_keys: [TEST_CONTENT_INODES[1].ino],
+          map_keys: [TEST_CONTENT_INODES[[1, nil]].position_key(true)],
           unwatched_pe_pos: Fluent::Plugin::TailInput::PositionFile::UNWATCHED_POSITION,
         },
         {
@@ -265,7 +294,7 @@ class IntailPositionFileTest < Test::Unit::TestCase
         }
       )
 
-      unwatched_pe_retaken = pf[TEST_CONTENT_INODES[0]]
+      unwatched_pe_retaken = pf[TEST_CONTENT_INODES[[0, nil]]]
       assert_not_equal pe_to_unwatch, unwatched_pe_retaken
     end
   end
