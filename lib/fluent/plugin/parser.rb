@@ -117,6 +117,7 @@ module Fluent
         @time_parser = time_parser_create
         @type_converters = build_type_converters(@types)
         @execute_convert_values = @type_converters || @null_value_pattern || @null_empty_string
+        @execute_null_conversion = @null_value_pattern || @null_empty_string
         @timeout_checker = if @timeout
                              class << self
                                alias_method :parse_orig, :parse
@@ -213,10 +214,45 @@ module Fluent
 
           if @type_converters && @type_converters.has_key?(key)
             record[key] = @type_converters[key].call(value)
+          elsif @execute_null_conversion && (value.is_a?(Hash) || value.is_a?(Array))
+            record[key] = convert_nested_values(value)
           end
         end
 
         return time, record
+      end
+
+      # Applies null conversion to values nested in a Hash or an Array.
+      # Unlike `types`, which is keyed by the top-level field name, null
+      # conversion is decided from the value itself, so it applies at any
+      # depth. Matching values become nil; the keys are kept.
+      # The traversal is iterative because the JSON parsers accept documents
+      # nested far deeper than the Ruby call stack.
+      def convert_nested_values(value)
+        stack = [value]
+        until stack.empty?
+          case container = stack.pop
+          when Hash
+            container.each_key do |key|
+              v = container[key]
+              if v.is_a?(String)
+                container[key] = nil if string_like_null(v)
+              elsif v.is_a?(Hash) || v.is_a?(Array)
+                stack << v
+              end
+            end
+          when Array
+            container.each_index do |i|
+              v = container[i]
+              if v.is_a?(String)
+                container[i] = nil if string_like_null(v)
+              elsif v.is_a?(Hash) || v.is_a?(Array)
+                stack << v
+              end
+            end
+          end
+        end
+        value
       end
 
       def string_like_null(value, null_empty_string = @null_empty_string, null_value_regexp = @null_value_pattern)

@@ -228,6 +228,89 @@ class JsonParserTest < ::Test::Unit::TestCase
     end
   end
 
+  # https://github.com/fluent/fluentd/issues/4222
+  sub_test_case "null conversion for nested values" do
+    data(
+      "nested object",
+      {
+        record: '{"msg":"foo","output":{"a":"unchanged","b":"keep"}}',
+        expected: [{"msg" => "foo", "output" => {"a" => nil, "b" => "keep"}}]
+      },
+      keep: true
+    )
+    data(
+      "deeply nested object",
+      {
+        record: '{"output":{"nested":{"a":"unchanged"}}}',
+        expected: [{"output" => {"nested" => {"a" => nil}}}]
+      },
+      keep: true
+    )
+    data(
+      "nested array",
+      {
+        record: '{"values":["unchanged","keep",["unchanged"]]}',
+        expected: [{"values" => [nil, "keep", [nil]]}]
+      },
+      keep: true
+    )
+    data(
+      "array of objects",
+      {
+        record: '[{"output":{"a":"unchanged","b":"keep"}}]',
+        expected: [{"output" => {"a" => nil, "b" => "keep"}}]
+      },
+      keep: true
+    )
+
+    def test_null_value_pattern(data)
+      parsed_records = []
+      @parser.configure("null_value_pattern" => "^unchanged$")
+      @parser.instance.parse(data[:record]) { |time, record|
+        parsed_records.append(record)
+      }
+      assert_equal(data[:expected], parsed_records)
+    end
+
+    def test_null_empty_string
+      parsed_records = []
+      @parser.configure("null_empty_string" => true)
+      @parser.instance.parse('{"output":{"a":"","b":"keep","list":[""]}}') { |time, record|
+        parsed_records.append(record)
+      }
+      assert_equal(
+        [{"output" => {"a" => nil, "b" => "keep", "list" => [nil]}}],
+        parsed_records
+      )
+    end
+
+    def test_no_conversion_leaves_nested_values_as_is
+      parsed_records = []
+      @parser.configure("json_parser" => "json")
+      @parser.instance.parse('{"output":{"a":"unchanged"}}') { |time, record|
+        parsed_records.append(record)
+      }
+      assert_equal([{"output" => {"a" => "unchanged"}}], parsed_records)
+    end
+  end
+
+  # Oj accepts documents nested much deeper than the Ruby call stack, so the
+  # traversal must not recurse.
+  sub_test_case "null conversion for deeply nested values" do
+    def test_deeply_nested_object
+      depth = 5000
+      @parser.configure("null_value_pattern" => "^unchanged$")
+      record = "unchanged"
+      depth.times { record = {"a" => record} }
+
+      _time, converted = @parser.instance.convert_values(nil, record)
+
+      value = converted
+      depth.times { value = value["a"] }
+      assert_nil(value)
+    end
+  end
+
   def test_yajl_parse_io_with_buffer_smaller_than_input
     parser = Fluent::Test::Driver::Parser.new(Fluent::Plugin::JSONParser)
     parser.configure(

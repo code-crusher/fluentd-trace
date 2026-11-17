@@ -125,6 +125,36 @@ class MessagePackParserTest < ::Test::Unit::TestCase
     end
   end
 
+  # https://github.com/fluent/fluentd/issues/4222
+  sub_test_case "null conversion for nested values" do
+    data(
+      "Nested Hash",
+      {
+        # {message: "foo", output: {a: "unchanged", b: "keep"}}.to_msgpack
+        input: "\x82\xA7message\xA3foo\xA6output\x82\xA1a\xA9unchanged\xA1b\xA4keep",
+        expected: [{"message" => "foo", "output" => {"a" => nil, "b" => "keep"}}]
+      },
+      keep: true
+    )
+    data(
+      "Nested Array",
+      {
+        # {values: ["unchanged", "keep"]}.to_msgpack
+        input: "\x81\xA6values\x92\xA9unchanged\xA4keep",
+        expected: [{"values" => [nil, "keep"]}]
+      },
+      keep: true
+    )
+
+    def test_parse(data)
+      parsed_records = []
+      create_driver("null_value_pattern" => "^unchanged$").instance.parse(data[:input]) do |time, record|
+        parsed_records.append(record)
+      end
+      assert_equal(data[:expected], parsed_records)
+    end
+  end
+
   sub_test_case "data left over from a previous call" do
     test "parse does not carry truncated data into the next call" do
       parser = create_driver("").instance
