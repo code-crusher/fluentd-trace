@@ -1325,6 +1325,57 @@ class BufferTest < Test::Unit::TestCase
     end
   end
 
+  sub_test_case 'logging an event stream exceeding the chunk limit' do
+    setup do
+      @dm0 = create_metadata(Time.parse('2016-04-11 16:00:00 +0000').to_i, nil, nil)
+      @format = ->(e){e.to_msgpack_stream}
+      # 200 bytes per record
+      @es = Fluent::ArrayEventStream.new([[event_time('2016-04-11 16:00:02 +0000'), {"message" => "x" * 178}]] * 10_000)
+    end
+
+    test 'does not warn when an event stream exceeds chunk_limit_size' do
+      @p = create_buffer({"chunk_limit_size" => 1_000_000}, klass: EmptyResumeDummyPlugin)
+      @p.start
+
+      @p.write({@dm0 => @es}, format: @format)
+
+      assert_equal [], $log.out.logs.grep(/limit exceeds for an emitted event stream/)
+    end
+
+    test 'logs at trace level when an event stream exceeds chunk_limit_size' do
+      @p = create_buffer({"chunk_limit_size" => 1_000_000}, klass: EmptyResumeDummyPlugin)
+      @p.start
+      $log.level = Fluent::Log::LEVEL_TRACE
+
+      @p.write({@dm0 => @es}, format: @format)
+
+      logs = $log.out.logs.grep(/chunk bytes limit exceeds for an emitted event stream/)
+      assert_equal 1, logs.size
+      assert logs.first.include?('[trace]')
+    end
+
+    test 'does not warn when an event stream exceeds chunk_limit_records' do
+      @p = create_buffer({"chunk_limit_records" => 1_000}, klass: EmptyResumeDummyPlugin)
+      @p.start
+
+      @p.write({@dm0 => @es}, format: @format)
+
+      assert_equal [], $log.out.logs.grep(/limit exceeds for an emitted event stream/)
+    end
+
+    test 'logs at trace level when an event stream exceeds chunk_limit_records' do
+      @p = create_buffer({"chunk_limit_records" => 1_000}, klass: EmptyResumeDummyPlugin)
+      @p.start
+      $log.level = Fluent::Log::LEVEL_TRACE
+
+      @p.write({@dm0 => @es}, format: @format)
+
+      logs = $log.out.logs.grep(/chunk size limit exceeds for an emitted event stream/)
+      assert_equal 1, logs.size
+      assert logs.first.include?('[trace]')
+    end
+  end
+
   sub_test_case 'custom format with configuration for test with lower chunk limit size' do
     setup do
       @p = create_buffer({"chunk_limit_size" => 1_280_000})

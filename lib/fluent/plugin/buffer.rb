@@ -755,10 +755,13 @@ module Fluent
 
             if chunk_size_over?(chunk)
               if format && empty_chunk
+                # An event stream larger than the chunk limit is not an error: it is split
+                # into multiple chunks by #write_step_by_step below. Log at trace level
+                # because this can happen routinely and would otherwise flood the log.
                 if chunk.bytesize > @chunk_limit_size
-                  log.warn "chunk bytes limit exceeds for an emitted event stream: #{adding_bytesize}bytes"
+                  log.on_trace { log.trace "chunk bytes limit exceeds for an emitted event stream: #{adding_bytesize}bytes" }
                 else
-                  log.warn "chunk size limit exceeds for an emitted event stream: #{chunk.size}records"
+                  log.on_trace { log.trace "chunk size limit exceeds for an emitted event stream: #{chunk.size}records" }
                 end
               end
               chunk.rollback
