@@ -202,6 +202,10 @@ module Fluent
       def convert_values(time, record)
         return time, record unless @execute_convert_values
 
+        # `types` is configured per top-level key, but null_value_pattern and
+        # null_empty_string apply to nested values too.
+        convert_nested = @null_value_pattern || @null_empty_string
+
         record.each_key do |key|
           value = record[key]
           next unless value # nil/null value is always left as-is.
@@ -213,10 +217,41 @@ module Fluent
 
           if @type_converters && @type_converters.has_key?(key)
             record[key] = @type_converters[key].call(value)
+          elsif convert_nested && (value.is_a?(Hash) || value.is_a?(Array))
+            convert_nested_values(value)
           end
         end
 
         return time, record
+      end
+
+      # Applies null_value_pattern and null_empty_string to the values of a
+      # parsed Hash or Array, including those nested in other Hashes/Arrays.
+      # Uses an explicit stack so that deeply nested input cannot overflow
+      # the Ruby stack.
+      def convert_nested_values(value)
+        containers = [value]
+        until containers.empty?
+          container = containers.pop
+          if container.is_a?(Array)
+            container.each_index { |i| convert_nested_value(container, i, containers) }
+          else
+            container.each_key { |k| convert_nested_value(container, k, containers) }
+          end
+        end
+      end
+
+      # Converts `container[key]` to nil if it looks like null, and queues
+      # nested Hashes/Arrays for conversion.
+      def convert_nested_value(container, key, containers)
+        value = container[key]
+        return unless value # nil/null value is always left as-is.
+
+        if value.is_a?(String)
+          container[key] = nil if string_like_null(value)
+        elsif value.is_a?(Hash) || value.is_a?(Array)
+          containers << value
+        end
       end
 
       def string_like_null(value, null_empty_string = @null_empty_string, null_value_regexp = @null_value_pattern)

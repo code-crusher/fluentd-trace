@@ -43,6 +43,57 @@ class ParserTest < ::Test::Unit::TestCase
     end
   end
 
+  sub_test_case '#convert_values with nested values' do
+    setup do
+      @i = ExampleParser.new
+    end
+
+    test 'applies null_value_pattern to nested Hashes and Arrays' do
+      @i.configure(config_element('parse', '', {'null_value_pattern' => 'unchanged'}))
+      json = '{"msg":"foo","hash":{"a":"unchanged","b":"kept"},"array":["unchanged","kept",{"c":"unchanged"}]}'
+      @i.parse(json) do |_time, record|
+        assert_equal(
+          {
+            'msg' => 'foo',
+            'hash' => {'a' => nil, 'b' => 'kept'},
+            'array' => [nil, 'kept', {'c' => nil}],
+          },
+          record
+        )
+      end
+    end
+
+    test 'applies null_empty_string to nested Hashes and Arrays' do
+      @i.configure(config_element('parse', '', {'null_empty_string' => 'yes'}))
+      json = '{"msg":"foo","hash":{"a":"","b":"kept"},"array":["",{"c":""}]}'
+      @i.parse(json) do |_time, record|
+        assert_equal(
+          {
+            'msg' => 'foo',
+            'hash' => {'a' => nil, 'b' => 'kept'},
+            'array' => [nil, {'c' => nil}],
+          },
+          record
+        )
+      end
+    end
+
+    test 'does not touch nested values without null_value_pattern or null_empty_string' do
+      @i.configure(config_element('parse', '', {'types' => 'msg:string'}))
+      json = '{"msg":"foo","hash":{"a":"unchanged"},"array":["unchanged"]}'
+      @i.parse(json) do |_time, record|
+        assert_equal(
+          {
+            'msg' => 'foo',
+            'hash' => {'a' => 'unchanged'},
+            'array' => ['unchanged'],
+          },
+          record
+        )
+      end
+    end
+  end
+
   sub_test_case '#string_like_null' do
     setup do
       @i = ExampleParser.new

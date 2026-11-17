@@ -207,6 +207,52 @@ class JsonParserTest < ::Test::Unit::TestCase
       assert_equal([[event_time('2013-02-28 12:00:00 +0900').to_i, {'size' => '777'}]], results)
     end
 
+    data('oj' => 'oj', 'yajl' => 'yajl', 'json' => 'json')
+    def test_parse_applies_null_value_pattern_to_nested_values(json_parser)
+      @parser.configure('json_parser' => json_parser, 'null_value_pattern' => 'unchanged')
+      record = nil
+      @parser.instance.parse('{"msg":"foo","output":{"ConfigMap/a":"unchanged","other":"kept"},"list":["unchanged","kept",{"nested":"unchanged"}]}') { |_time, r|
+        record = r
+      }
+      assert_equal(
+        {
+          'msg' => 'foo',
+          'output' => {'ConfigMap/a' => nil, 'other' => 'kept'},
+          'list' => [nil, 'kept', {'nested' => nil}],
+        },
+        record
+      )
+    end
+
+    data('oj' => 'oj', 'yajl' => 'yajl', 'json' => 'json')
+    def test_parse_applies_null_empty_string_to_nested_values(json_parser)
+      @parser.configure('json_parser' => json_parser, 'null_empty_string' => 'true')
+      record = nil
+      @parser.instance.parse('{"msg":"foo","output":{"empty":"","other":"kept"},"list":["",{"nested":""}]}') { |_time, r|
+        record = r
+      }
+      assert_equal(
+        {
+          'msg' => 'foo',
+          'output' => {'empty' => nil, 'other' => 'kept'},
+          'list' => [nil, {'nested' => nil}],
+        },
+        record
+      )
+    end
+
+    def test_parse_applies_null_value_pattern_to_deeply_nested_values
+      @parser.configure('null_value_pattern' => 'unchanged')
+      record = nil
+      # Oj has no nesting limit, so a deeply nested value must not overflow
+      # the Ruby stack while it is converted.
+      nested = '{"k":"unchanged"}'
+      10_000.times { nested = %Q({"k":#{nested}}) }
+      @parser.instance.parse(nested) { |_time, r| record = r }
+      10_000.times { record = record['k'] }
+      assert_nil(record['k'])
+    end
+
     data('no conversion' => [{}, 0],
          'types' => [{'types' => 'k:string'}, 2],
          'null_empty_string' => [{'null_empty_string' => 'true'}, 2],

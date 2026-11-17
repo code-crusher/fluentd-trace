@@ -125,6 +125,35 @@ class MessagePackParserTest < ::Test::Unit::TestCase
     end
   end
 
+  sub_test_case "execute_convert_values with null_value_pattern on nested values" do
+    data(
+      "Nested Hash",
+      {
+        # {message: "foo", nested: {key: "unchanged", other: "kept"}}.to_msgpack
+        input: "\x82\xA7message\xA3foo\xA6nested\x82\xA3key\xA9unchanged\xA5other\xA4kept",
+        expected: [{"message" => "foo", "nested" => {"key" => nil, "other" => "kept"}}]
+      },
+      keep: true
+    )
+    data(
+      "Nested Array",
+      {
+        # {message: "foo", list: ["unchanged", {key: "unchanged"}]}.to_msgpack
+        input: "\x82\xA7message\xA3foo\xA4list\x92\xA9unchanged\x81\xA3key\xA9unchanged",
+        expected: [{"message" => "foo", "list" => [nil, {"key" => nil}]}]
+      },
+      keep: true
+    )
+
+    def test_parse(data)
+      parsed_records = []
+      create_driver("null_value_pattern unchanged").instance.parse(data[:input]) do |time, record|
+        parsed_records.append(record)
+      end
+      assert_equal(data[:expected], parsed_records)
+    end
+  end
+
   sub_test_case "data left over from a previous call" do
     test "parse does not carry truncated data into the next call" do
       parser = create_driver("").instance
