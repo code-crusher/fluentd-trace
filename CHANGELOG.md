@@ -1,5 +1,12 @@
 # v1.20
 
+## Unreleased
+
+### Enhancement
+
+* fluentd: add `--try-run` command line option to check that Fluentd can really start with the given configuration https://github.com/fluent/fluentd/issues/4268
+  * Unlike `--dry-run`, `--try-run` actually starts all plugins (including their `#start` methods), then shuts down and exits. The exit code is `0` when the startup succeeded, non-zero otherwise (e.g. when a plugin is missing or raises an error in `#start`).
+
 ## Release v1.20.1 - 2026/10/26
 
 ### Bug Fix

@@ -175,6 +175,27 @@ module Fluent
       end
     end
 
+    # Start the worker fully (all plugins' #start are invoked), then shut it
+    # down immediately. Unlike #run, this does not block: it is used by the
+    # --try-run command line option to check that fluentd can really start
+    # with the given configuration, beyond what --dry-run can check.
+    def try_run
+      $log.info "starting fluentd worker", pid: Process.pid, ppid: Process.ppid, worker: worker_id
+      @root_agent_mutex.synchronize do
+        start
+      end
+
+      @fluent_log_event_router.start
+
+      $log.info "fluentd worker is now running", worker: worker_id
+      $log.info "fluentd worker is now stopping", worker: worker_id
+      stop
+
+      @root_agent_mutex.synchronize do
+        stop_phase(@root_agent)
+      end
+    end
+
     # @param conf [Fluent::Config]
     # @param supervisor [Bool]
     # @return nil

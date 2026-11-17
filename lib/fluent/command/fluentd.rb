@@ -41,6 +41,10 @@ op.on('--dry-run', "Check fluentd setup is correct or not", TrueClass) {|b|
   cmd_opts[:dry_run] = b
 }
 
+op.on('--try-run', "Check that fluentd can start with the given configuration, then exit", TrueClass) {|b|
+  cmd_opts[:try_run] = b
+}
+
 op.on('--show-plugin-config=PLUGIN', "[DEPRECATED] Show PLUGIN configuration and exit(ex: input:dummy)") {|plugin|
   cmd_opts[:show_plugin_config] = plugin
 }
@@ -360,7 +364,7 @@ exit 0 if early_exit
 if opts[:supervise]
   supervisor = Fluent::Supervisor.new(cmd_opts)
   supervisor.configure(supervisor: true)
-  supervisor.run_supervisor(dry_run: opts[:dry_run])
+  supervisor.run_supervisor(dry_run: opts[:dry_run], try_run: opts[:try_run])
 else
   if opts[:standalone_worker] && opts[:workers] && opts[:workers] > 1
     puts "Error: multi workers is not supported with --no-supervisor"

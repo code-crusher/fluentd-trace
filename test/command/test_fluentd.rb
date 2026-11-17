@@ -6,7 +6,9 @@ require_relative '../helper'
 require 'fileutils'
 require 'timeout'
 require 'securerandom'
+require 'net/http'
 require 'fluent/file_wrapper'
+require 'fluent/supervisor'
 
 class TestFluentdCommand < ::Test::Unit::TestCase
   SUPERVISOR_PID_PATTERN = /starting fluentd-[.0-9]+ pid=(\d+)/
@@ -218,6 +220,40 @@ class TestFluentdCommand < ::Test::Unit::TestCase
 
     assert matched && !matched_wrongly, error_msg_match
     assert succeeded_block, error_msg_block if block_given?
+  end
+
+  # Run fluentd and wait for it to exit by itself, then return
+  # [exit_status, stdout_buffer]. Unlike #execute_command, this does not
+  # kill the process: --try-run is expected to exit on its own.
+  def run_fluentd_and_wait_exit(cmdline, timeout: 60)
+    gemfile_path = File.expand_path(File.dirname(__FILE__) + "../../../Gemfile")
+    env = { "BUNDLE_GEMFILE" => gemfile_path }
+    cmdname = cmdline.shift
+    arg0 = "testing-fluentd"
+    stdio_buf = +""
+    exit_status = nil
+
+    IO.popen(env, [[cmdname, arg0], *cmdline], chdir: @tmp_dir, err: [:child, :out]) do |io|
+      pid = io.pid
+      begin
+        waiting(timeout) do
+          loop do
+            readables, _, _ = IO.select([io], nil, nil, 1)
+            next unless readables
+            break if readables.first.eof?
+
+            stdio_buf << eager_read(readables.first)
+          end
+        end
+      rescue Timeout::Error
+        Process.kill(:KILL, pid) rescue nil
+        flunk("fluentd did not exit within #{timeout} seconds:\n" + stdio_buf)
+      end
+      _, status = Process.waitpid2(pid) rescue nil
+      exit_status = status&.exitstatus
+    end
+
+    [exit_status, stdio_buf]
   end
 
   def assert_fluentd_fails_to_start(cmdline, *pattern_list, timeout: 20)
@@ -611,6 +647,72 @@ CONF
         create_cmdline(conf_path, "-p", File.dirname(plugin_path)),
         'unexpected error error_class=Fluent::UnrecoverableError error="an unrecoverable error occurs in Fluentd process"',
       )
+    end
+  end
+
+  sub_test_case '--try-run' do
+    test 'exits with status 0 when fluentd can start with the configuration' do
+      conf_path = create_conf_file('try_run_success.conf', <<~CONF)
+        <source>
+          @type sample
+          tag test.try_run
+        </source>
+        <match test.try_run>
+          @type null
+        </match>
+      CONF
+      assert File.exist?(conf_path)
+
+      exit_status, logs = run_fluentd_and_wait_exit(create_cmdline(conf_path, '--try-run'))
+      assert_equal 0, exit_status
+      lines = logs.split("\n")
+      assert lines.any? { |line| line.include?("as try run mode") }, logs
+      assert lines.any? { |line| line.include?("fluentd worker is now running") }, logs
+    end
+
+    test 'exits with a non-zero status when a plugin raises an error in #start' do
+      script =  "require 'fluent/plugin/input'\n"
+      script << "require 'fluent/error'\n"
+      script << "module Fluent::Plugin\n"
+      script << "  class CrashingInput < Input\n"
+      script << "    Fluent::Plugin.register_input('crashing', self)\n"
+      script << "    def start\n"
+      script << "      raise Fluent::UnrecoverableError\n"
+      script << "    end\n"
+      script << "  end\n"
+      script << "end\n"
+      plugin_path = create_plugin_file('in_crashing.rb', script)
+
+      conf_path = create_conf_file('try_run_crashing_plugin.conf', <<~CONF)
+        <source>
+          @type crashing
+          @label @dummydata
+        </source>
+        <label @dummydata>
+          <match **>
+            @type null
+          </match>
+        </label>
+      CONF
+      assert File.exist?(conf_path)
+
+      exit_status, logs = run_fluentd_and_wait_exit(create_cmdline(conf_path, '-p', File.dirname(plugin_path), '--try-run'))
+      assert_not_equal 0, exit_status
+      assert logs.include?('error_class=Fluent::UnrecoverableError'), logs
+    end
+
+    test 'exits with a non-zero status when the configuration has a config error' do
+      conf_path = create_conf_file('try_run_config_error.conf', <<~CONF)
+        <source>
+          @type nonexistent_plugin_for_try_run
+        </source>
+      CONF
+      assert File.exist?(conf_path)
+
+      exit_status, logs = run_fluentd_and_wait_exit(create_cmdline(conf_path, '--try-run'))
+      assert_not_equal 0, exit_status
+      assert logs.include?('config error'), logs
+      assert logs.include?("Unknown input plugin 'nonexistent_plugin_for_try_run'"), logs
     end
   end
 

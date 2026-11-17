@@ -620,6 +620,13 @@ module Fluent
         restart_worker_interval: params['restart_worker_interval'],
       }
       se_config[:pid_path] = pid_path if daemonize
+      if params['try_run']
+        # In try-run mode, workers exit by themselves once the startup has
+        # been checked (or has failed). Make every worker exit definitive:
+        # the supervisor then stops without respawning workers and exits
+        # with the worker's exit status as its own exit status.
+        se_config[:unrecoverable_exit_codes] = se_config[:unrecoverable_exit_codes] + [0, 1]
+      end
 
       se_config
     end
@@ -696,9 +703,12 @@ module Fluent
       @finished = false
     end
 
-    def run_supervisor(dry_run: false)
+    def run_supervisor(dry_run: false, try_run: false)
       if dry_run
         $log.info "starting fluentd-#{Fluent::VERSION} as dry run mode", ruby: RUBY_VERSION
+      end
+      if try_run
+        $log.info "starting fluentd-#{Fluent::VERSION} as try run mode", ruby: RUBY_VERSION
       end
 
       if @system_config.workers < 1
@@ -751,7 +761,7 @@ module Fluent
         $log.info 'finished dry run mode'
         exit 0
       else
-        supervise
+        supervise(try_run: try_run)
       end
     end
 
@@ -791,7 +801,11 @@ module Fluent
         Fluent::Engine.init(@system_config, start_in_parallel: ENV.key?("FLUENT_RUNNING_IN_PARALLEL_WITH_OLD"))
         Fluent::Engine.run_configure(@conf)
         enable_ruby_jit if @system_config.enable_jit
-        Fluent::Engine.run
+        if @cl_opt[:try_run]
+          Fluent::Engine.try_run
+        else
+          Fluent::Engine.run
+        end
         self.class.cleanup_socketmanager_path if @standalone_worker
         exit 0
       end
@@ -964,7 +978,7 @@ module Fluent
       exit 0
     end
 
-    def supervise
+    def supervise(try_run: false)
       Process.setproctitle("supervisor:#{@system_config.process_name}") if @system_config.process_name
       $log.info "starting fluentd-#{Fluent::VERSION}", pid: Process.pid, ruby: RUBY_VERSION
 
@@ -993,6 +1007,7 @@ module Fluent
         'counter_server' => @system_config.counter_server,
         'disable_shared_socket' => @system_config.disable_shared_socket,
         'restart_worker_interval' => @system_config.restart_worker_interval,
+        'try_run' => try_run,
       }
 
       se = ServerEngine.create(ServerModule, WorkerModule) {
