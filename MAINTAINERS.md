@@ -1,7 +1,5 @@
 # Fluentd Maintainers
 
-- [Naotoshi Seo](https://github.com/sonots), [ZOZO Technologies](https://tech.zozo.com/en/)
-- [Okkez](https://github.com/okkez)
 - [Hiroshi Hatake](https://github.com/cosmo0920), [Chronosphere](https://chronosphere.io/)
 - [Masahiro Nakagawa](https://github.com/repeatedly)
 - [Satoshi Tagomori](https://github.com/tagomoris)
@@ -11,6 +9,15 @@
 - [Takuro Ashie](https://github.com/ashie), [ClearCode](https://www.clear-code.com/)
 - [Kentaro Hayashi](https://github.com/kenhys), [ClearCode](https://www.clear-code.com/)
 - [Daijiro Fukuda](https://github.com/daipom)
+
+## Emeritus Maintainers
+
+The following people served as Fluentd maintainers in the past. See
+[Emeritus Maintainers](GOVERNANCE.md#emeritus-maintainers) in GOVERNANCE.md
+for the definition of this status.
+
+- [Naotoshi Seo](https://github.com/sonots), [ZOZO Technologies](https://tech.zozo.com/en/)
+- [Okkez](https://github.com/okkez)
 
 ## Sub Projects: Fluent Bit
 

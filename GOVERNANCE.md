@@ -17,15 +17,25 @@ Individuals not associated with or employed by a company or organization are all
 
 In other words, if two maintainers are employed by Company X, two by Company Y, two by Company Z, and one maintainer is an un-affiliated individual, a total of four "organization votes" are possible; one for X, one for Y, one for Z, and one for the un-affiliated individual.
 
-Any maintainer from an organization may cast the vote for that organization.
+Any active maintainer from an organization may cast the vote for that organization. Maintainers with "emeritus" status do not have a ballot to vote: See Emeritus Maintainers, below.
 
-For formal votes, a specific statement of what is being voted on should be added to the relevant github issue or PR, and a link to that issue or PR added to the maintainers meeting agenda document. Maintainers should indicate their yes/no vote on that issue or PR, and after a suitable period of time, the votes will be tallied and the outcome noted.
+For formal votes, a specific statement of what is being voted on should be added to the relevant github issue or PR, and a link to that issue or PR added to the maintainers meeting agenda document. Active maintainers should indicate their yes/no vote on that issue or PR, and after a suitable period of time, the votes will be tallied and the outcome noted.
 
 ## Changes in Maintainership
 
 New maintainers are proposed by an existing maintainer and are elected by a 2/3 majority organization vote.
 
-Maintainers can be removed by a 2/3 majority organization vote.
+Maintainers can resign, or be removed by a 2/3 majority organization vote.
+
+### Emeritus Maintainers
+
+Maintainers who have been inactive for 5 years, or who have resigned, are given "emeritus" status.
+
+"Inactive" means no commitment and no community activity, such as commits, issues, pull requests, reviews, and comments, in the Fluentd project for 5 years.
+
+Emeritus status honors the contributions of former maintainers. Their names are kept in the "Emeritus Maintainers" section of [MAINTAINERS.md](MAINTAINERS.md) instead of being removed from it.
+
+Emeritus maintainers do not have a ballot to vote and are not counted for organization votes. They can return to active status through the normal process for new maintainers: See above.
 
 ## Github Project Administration
 
