@@ -15,6 +15,7 @@
 #
 
 require 'msgpack'
+require 'fluent/json'
 require 'json'
 
 require 'fluent/env'
@@ -80,7 +81,7 @@ module Fluent
         BYTES_TO_READ = 8192
 
         def call(io)
-          parser = JSON::ResumableParser.new(**Fluent::DEFAULT_JSON_PARSE_OPTIONS)
+          parser = Fluent::JSONResumableParserFactory.parser
           begin
             chunk = +"".b
             while io.readpartial(BYTES_TO_READ, chunk)

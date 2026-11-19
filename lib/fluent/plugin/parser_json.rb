@@ -18,6 +18,7 @@ require 'fluent/env'
 require 'fluent/plugin/parser'
 require 'fluent/time'
 require 'fluent/oj_options'
+require 'fluent/json'
 
 require 'json'
 
@@ -93,7 +94,7 @@ module Fluent
       end
 
       def parse_io(io, &block)
-        parser = JSON::ResumableParser.new(**Fluent::DEFAULT_JSON_PARSE_OPTIONS)
+        parser = Fluent::JSONResumableParserFactory.parser
         begin
           chunk = +"".b
           while io.readpartial(@stream_buffer_size, chunk)
