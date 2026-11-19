@@ -1312,6 +1312,46 @@ EOL
       assert_equal(['test', time, records[0]], events[0])
       assert_equal(['test', time, records[1]], events[1])
     end
+
+    test 'nodes_shared_key_match_with_multiple_shared_keys' do
+      # the input side accepts both the old and the new key during key rotation
+      input_conf = target_config + %[
+                       <security>
+                         self_hostname in.localhost
+                         shared_key old-sharedkey,new-sharedkey
+                       </security>
+                     ]
+      target_input_driver = create_target_input_driver(conf: input_conf)
+      output_conf = %[
+          verify_connection_at_startup true
+          <security>
+            self_hostname localhost
+            shared_key old-sharedkey
+          </security>
+          <server>
+            name test
+            host #{TARGET_HOST}
+            port #{@target_port}
+          </server>
+      ]
+      @d = d = create_driver(output_conf)
+
+      time = event_time("2011-01-02 13:14:15 UTC")
+      records = [{ "a" => 1 }, { "a" => 2 }]
+
+      target_input_driver.run(expect_records: 2, timeout: 3) do
+        d.run(default_tag: 'test') do
+          records.each do |record|
+            d.feed(time, record)
+          end
+        end
+      end
+
+      events = target_input_driver.events
+      assert_false events.empty?
+      assert_equal(['test', time, records[0]], events[0])
+      assert_equal(['test', time, records[1]], events[1])
+    end
   end
 
   test 'Create new connection per send_data' do

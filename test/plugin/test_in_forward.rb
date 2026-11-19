@@ -60,6 +60,33 @@ class ForwardInputTest < Test::Unit::TestCase
     ]
   end
 
+  def config_auth_with_multiple_shared_keys
+    base_config + %[
+      <security>
+        self_hostname localhost
+        shared_key key_one,key_two
+        allow_anonymous_source false
+        <client>
+          network 127.0.0.0/8
+        </client>
+      </security>
+    ]
+  end
+
+  def config_auth_with_multiple_shared_keys_per_client
+    base_config + %[
+      <security>
+        self_hostname localhost
+        shared_key key_one,key_two
+        allow_anonymous_source false
+        <client>
+          network 127.0.0.0/8
+          shared_key key_three,key_four
+        </client>
+      </security>
+    ]
+  end
+
   def create_driver(conf=base_config)
     Fluent::Test::Driver::Input.new(Fluent::Plugin::ForwardInput).configure(conf)
   end
@@ -82,6 +109,36 @@ class ForwardInputTest < Test::Unit::TestCase
       assert d.instance.security
       assert_equal 1, d.instance.security.users.size
       assert_equal 1, d.instance.security.clients.size
+    end
+
+    test 'auth with a single shared_key' do
+      @d = d = create_driver(config_auth)
+      assert_equal ['foobar1'], d.instance.security.shared_key
+      assert_equal ['foobar1'], d.instance.instance_variable_get(:@nodes).first[:shared_key]
+    end
+
+    test 'auth with multiple shared_keys separated by commas' do
+      @d = d = create_driver(config_auth_with_multiple_shared_keys)
+      assert_equal ['key_one', 'key_two'], d.instance.security.shared_key
+      assert_equal ['key_one', 'key_two'], d.instance.instance_variable_get(:@nodes).first[:shared_key]
+    end
+
+    test 'auth with multiple shared_keys per client' do
+      @d = d = create_driver(config_auth_with_multiple_shared_keys_per_client)
+      assert_equal ['key_one', 'key_two'], d.instance.security.shared_key
+      assert_equal ['key_three', 'key_four'], d.instance.instance_variable_get(:@nodes).first[:shared_key]
+    end
+
+    test 'auth with an empty shared_key' do
+      conf = base_config + %[
+        <security>
+          self_hostname localhost
+          shared_key
+        </security>
+      ]
+      assert_raise(Fluent::ConfigError.new("at least one shared_key is required")) do
+        create_driver(conf)
+      end
     end
 
     data(tag: "tag",
@@ -1265,6 +1322,101 @@ class ForwardInputTest < Test::Unit::TestCase
     end
   ensure
     io.close rescue nil # SSL socket requires any writes to close sockets
+  end
+
+  # performs the authentication handshake like simulate_auth_sequence, but returns
+  # the ['PONG', ...] message instead of raising when authentication fails
+  def check_authentication(shared_key, username: '', password: '')
+    io = connect
+    auth_response_timeout = 30
+    shared_key_salt = 'salt'
+
+    # reading helo
+    helo_data = read_data(io, auth_response_timeout){|data| MessagePack.unpack(data) rescue nil }
+    raise "Authentication packet timeout" unless helo_data
+    raise "Authentication connection closed" if helo_data == ''
+    # ['HELO', options(hash)]
+    helo = MessagePack.unpack(helo_data)
+    raise "Invalid HELO header" unless helo[0] == 'HELO'
+    nonce = helo[1]['nonce']
+
+    # sending ping
+    ping = [
+      'PING',
+      'selfhostname',
+      shared_key_salt,
+      Digest::SHA512.new
+        .update(shared_key_salt)
+        .update('selfhostname')
+        .update(nonce)
+        .update(shared_key).hexdigest,
+    ]
+    if helo[1]['auth'] # auth enabled -> value is auth salt
+      pass_digest = Digest::SHA512.new.update(helo[1]['auth']).update(username).update(password).hexdigest
+      ping.push(username, pass_digest)
+    else
+      ping.push('', '')
+    end
+    io.write ping.to_msgpack
+    io.flush
+
+    # reading pong
+    pong_data = read_data(io, auth_response_timeout){|data| MessagePack.unpack(data) rescue nil }
+    raise "PONG packet timeout" unless pong_data
+    raise "PONG connection closed" if pong_data == ''
+    # ['PONG', bool(auth_result), string(reason_if_failed), self_hostname, shared_key_digest]
+    pong = MessagePack.unpack(pong_data)
+    if pong[1]
+      # the PONG digest proves which key the input plugin used for authentication
+      clientside_calculated = Digest::SHA512.new
+        .update(shared_key_salt)
+        .update(pong[3])
+        .update(nonce)
+        .update(shared_key).hexdigest
+      raise "Shared key digest mismatch (used key: #{shared_key.inspect})" unless clientside_calculated == pong[4]
+    end
+    pong
+  ensure
+    io.close rescue nil
+  end
+
+  sub_test_case 'authentication with multiple shared_keys' do
+    test 'client authenticates with the first key' do
+      @d = d = create_driver(config_auth_with_multiple_shared_keys)
+      d.run(shutdown: false) {}
+      pong = check_authentication('key_one')
+      assert_equal true, pong[1]
+    end
+
+    test 'client authenticates with the second key' do
+      @d = d = create_driver(config_auth_with_multiple_shared_keys)
+      d.run(shutdown: false) {}
+      pong = check_authentication('key_two')
+      assert_equal true, pong[1]
+    end
+
+    test 'client is rejected with an unknown key' do
+      @d = d = create_driver(config_auth_with_multiple_shared_keys)
+      d.run(shutdown: false) {}
+      pong = check_authentication('key_three')
+      assert_equal false, pong[1]
+      assert_equal 'shared_key mismatch', pong[2]
+    end
+
+    test 'client authenticates with a per-client key' do
+      @d = d = create_driver(config_auth_with_multiple_shared_keys_per_client)
+      d.run(shutdown: false) {}
+      pong = check_authentication('key_four')
+      assert_equal true, pong[1]
+    end
+
+    test 'client is rejected with a security level key when the client has its own keys' do
+      @d = d = create_driver(config_auth_with_multiple_shared_keys_per_client)
+      d.run(shutdown: false) {}
+      pong = check_authentication('key_one')
+      assert_equal false, pong[1]
+      assert_equal 'shared_key mismatch', pong[2]
+    end
   end
 
   sub_test_case 'source_hostname_key and source_address_key features' do

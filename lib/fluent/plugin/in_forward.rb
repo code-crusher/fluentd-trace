@@ -79,8 +79,8 @@ module Fluent::Plugin
     config_section :security, required: false, multi: false do
       desc 'The hostname'
       config_param :self_hostname, :string
-      desc 'Shared key for authentication'
-      config_param :shared_key, :string, secret: true
+      desc 'Shared key for authentication. Multiple keys can be specified separated by commas for key rotation.'
+      config_param :shared_key, :array, value_type: :string, secret: true
       desc 'If true, use user based authentication'
       config_param :user_auth, :bool, default: false
       desc 'Allow anonymous source. <client> sections required if disabled.'
@@ -100,8 +100,8 @@ module Fluent::Plugin
         config_param :host, :string, default: nil
         desc 'Network address specification'
         config_param :network, :string, default: nil
-        desc 'Shared key per client'
-        config_param :shared_key, :string, default: nil, secret: true
+        desc 'Shared key per client. Multiple keys can be specified separated by commas for key rotation.'
+        config_param :shared_key, :array, value_type: :string, default: nil, secret: true
         desc 'Array of username.'
         config_param :users, :array, default: []
       end
@@ -129,6 +129,9 @@ module Fluent::Plugin
         end
         if !@security.allow_anonymous_source && @security.clients.empty?
           raise Fluent::ConfigError, "<client> sections required if allow_anonymous_source disabled"
+        end
+        if @security.shared_key.empty?
+          raise Fluent::ConfigError, "at least one shared_key is required"
         end
 
         @nodes = []
@@ -452,9 +455,12 @@ module Fluent::Plugin
         return false, "anonymous source host '#{remote_addr}' denied", nil
       end
 
-      shared_key = node ? node[:shared_key] : @security.shared_key
-      serverside = Digest::SHA512.new.update(shared_key_salt).update(hostname).update(nonce).update(shared_key).hexdigest
-      if shared_key_hexdigest != serverside
+      shared_keys = node ? node[:shared_key] : @security.shared_key
+      shared_key = shared_keys.find{|key|
+        serverside = Digest::SHA512.new.update(shared_key_salt).update(hostname).update(nonce).update(key).hexdigest
+        shared_key_hexdigest == serverside
+      }
+      if shared_key.nil?
         log.warn "Shared key mismatch", address: remote_addr, hostname: hostname
         return false, 'shared_key mismatch', nil
       end
