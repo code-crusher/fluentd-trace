@@ -160,7 +160,7 @@ module Fluent
       else
         raise "BUG: unknown process type for logger:#{@process_type}"
       end
-      @worker_id = opts[:worker_id]
+      @worker_id = opts[:worker_id] || 0
       @worker_id_part = "##{@worker_id} " # used only for :default log type in workers
     end
 
@@ -568,6 +568,17 @@ module Fluent
       end
     end
 
+    # Worker id recorded in log event records, to always make it clear which
+    # worker emitted the event (https://github.com/fluent/fluentd/issues/3919).
+    # nil for the supervisor process, which is not a worker.
+    def log_event_worker_id
+      if @process_type == :supervisor
+        nil
+      else
+        @worker_id
+      end
+    end
+
     def event(level, args)
       time = Time.now
       message = @optional_header ? @optional_header.dup : ''
@@ -607,6 +618,9 @@ module Fluent
         record.keys.each {|key|
           record[key] = record[key].inspect unless record[key].respond_to?(:to_msgpack)
         }
+        if worker_id = log_event_worker_id
+          record['worker_id'] ||= worker_id
+        end
         record['message'] = message.dup
         @engine.push_log_event("#{LOG_EVENT_TAG_PREFIX}.#{level}", Fluent::EventTime.from_time(time), record)
       end

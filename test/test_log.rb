@@ -784,6 +784,64 @@ class LogTest < Test::Unit::TestCase
   ensure
     logdev&.close
   end
+
+  sub_test_case "worker_id in log event records" do
+    def create_logger(process_type, worker_id = nil)
+      dl_opts = {}
+      dl_opts[:log_level] = ServerEngine::DaemonLogger::TRACE
+      logger = ServerEngine::DaemonLogger.new(@log_device, dl_opts)
+      opts = { process_type: process_type }
+      opts[:worker_id] = worker_id if worker_id
+      Fluent::Log.new(logger, opts)
+    end
+
+    def log_event_records(logger, *args)
+      events = []
+      logger.enable_event(true)
+      engine = logger.instance_variable_get(:@engine)
+      stub(engine).push_log_event { |tag, time, record| events << [tag, time, record] }
+      logger.info(*args)
+      events
+    end
+
+    test 'worker0 process type records its worker_id for any log type' do
+      logger = create_logger(:worker0, 10)
+      records = log_event_records(logger, "default log").map { |_, _, r| r } +
+                log_event_records(logger, :worker0, "worker0 log").map { |_, _, r| r }
+      assert_equal(2, records.size)
+      records.each do |record|
+        assert_equal(10, record['worker_id'])
+      end
+    end
+
+    test 'workers process type records its worker_id' do
+      logger = create_logger(:workers, 7)
+      events = log_event_records(logger, "default log")
+      assert_equal(1, events.size)
+      assert_equal(7, events[0][2]['worker_id'])
+    end
+
+    test 'standalone process type records worker_id 0 by default' do
+      logger = create_logger(:standalone) # no worker_id given
+      events = log_event_records(logger, "default log")
+      assert_equal(1, events.size)
+      assert_equal(0, events[0][2]['worker_id'])
+    end
+
+    test 'supervisor process type records no worker_id' do
+      logger = create_logger(:supervisor)
+      events = log_event_records(logger, "default log")
+      assert_equal(1, events.size)
+      assert_false(events[0][2].key?('worker_id'))
+    end
+
+    test 'a worker_id given by the log call is not overwritten' do
+      logger = create_logger(:worker0, 10)
+      events = log_event_records(logger, "msg", worker_id: 42)
+      assert_equal(1, events.size)
+      assert_equal(42, events[0][2]['worker_id'])
+    end
+  end
 end
 
 class PluginLoggerTest < Test::Unit::TestCase

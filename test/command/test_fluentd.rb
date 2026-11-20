@@ -408,7 +408,7 @@ CONF
       assert_log_matches(
         create_cmdline(conf_path),
         "fluentd worker is now running",
-        'fluent.info: {"worker":0,"message":"fluentd worker is now running worker=0"}',
+        'fluent.info: {"worker":0,"worker_id":0,"message":"fluentd worker is now running worker=0"}',
         "define <match fluent.**> to capture fluentd logs in top level is deprecated. Use <label @FLUENT_LOG> instead",
         patterns_not_match: ['[warn]: some tags for log events are not defined in top level (to be ignored) tags=["fluent.trace", "fluent.debug"]'],
       )
@@ -442,7 +442,7 @@ CONF
       assert_log_matches(
         create_cmdline(conf_path),
         "fluentd worker is now running",
-        'fluent.info: {"worker":0,"message":"fluentd worker is now running worker=0"}',
+        'fluent.info: {"worker":0,"worker_id":0,"message":"fluentd worker is now running worker=0"}',
         patterns_not_match: ['[warn]: some tags for log events are not defined in @FLUENT_LOG label (to be ignored)'],
       )
     end
