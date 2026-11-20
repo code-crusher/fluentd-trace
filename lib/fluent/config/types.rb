@@ -17,6 +17,8 @@
 require 'json'
 
 require 'fluent/config/error'
+require 'fluent/config/dynamic_string'
+require 'fluent/plugin_helper/record_accessor'
 
 module Fluent
   module Config
@@ -108,6 +110,26 @@ module Fluent
       Config.string_value(val, opts, name)
     }
 
+    def self.record_accessor_value(val, opts = {}, name = nil)
+      return nil if val.nil?
+
+      Fluent::PluginHelper::RecordAccessor::Accessor.new(Config.string_value(val, opts, name))
+    end
+
+    RECORD_ACCESSOR_TYPE = Proc.new { |val, opts = {}, name = nil|
+      Config.record_accessor_value(val, opts, name)
+    }
+
+    def self.dynamic_string_value(val, opts = {}, name = nil, plugin = nil)
+      return nil if val.nil?
+
+      Fluent::Config::DynamicString.new(Config.string_value(val, opts, name), plugin)
+    end
+
+    DYNAMIC_STRING_TYPE = Proc.new { |val, opts = {}, name = nil, plugin = nil|
+      Config.dynamic_string_value(val, opts, name, plugin)
+    }
+
     def self.symbol_value(val, opts = {}, name = nil)
       return nil if val.nil? || val.empty?
 
@@ -191,6 +213,7 @@ module Fluent
         when :time then Config.time_value(value, opts, name)
         when :regexp then Config.regexp_value(value, opts, name)
         when :symbol then Config.symbol_value(value, opts, name)
+        when :record_accessor then Config.record_accessor_value(value, opts, name)
         else
           raise "unknown type in REFORMAT: #{type}"
         end

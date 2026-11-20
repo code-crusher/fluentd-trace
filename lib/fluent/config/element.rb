@@ -216,7 +216,7 @@ module Fluent
           "#{nindent}#{k} #{default_value(k)}\n"
         else
           case param_type(k)
-          when :string
+          when :string, :record_accessor, :dynamic_string
             "#{nindent}#{k} \"#{self.class.unescape_parameter(v)}\"\n"
           when :enum, :integer, :float, :size, :bool, :time
             "#{nindent}#{k} #{v}\n"

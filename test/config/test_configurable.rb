@@ -196,6 +196,53 @@ module ConfigurableSpec
     config_param :name, :string, default: 'example7', skip_accessor: true
   end
 
+  class ExampleWithRecordAccessor
+    include Fluent::Configurable
+    config_param :key, :record_accessor
+    config_param :key_with_default, :record_accessor, default: '$.default.key'
+    config_param :key_with_nil, :record_accessor, default: nil
+  end
+
+  class ExampleWithDynamicString
+    include Fluent::Configurable
+    config_param :path, :dynamic_string
+    config_param :path_with_default, :dynamic_string, default: '/path/to/${tag}.log'
+    config_param :path_with_nil, :dynamic_string, default: nil
+
+    def extract_placeholders(str, chunk)
+      str.gsub('${tag}', chunk)
+    end
+  end
+
+  class ExampleWithDynamicStringWithoutPlaceholderSupport
+    include Fluent::Configurable
+    config_param :path, :dynamic_string
+  end
+
+  class ExampleWithPluginDependentTypesAsArgument
+    include Fluent::Configurable
+    config_section :store, multi: true do
+      config_argument :path, :dynamic_string, default: '/path/to/${tag}.log'
+      config_param :key, :record_accessor
+    end
+
+    def extract_placeholders(str, chunk)
+      str.gsub('${tag}', chunk)
+    end
+  end
+
+  class ExampleWithDynamicStringInSection
+    include Fluent::Configurable
+    config_section :store, multi: true do
+      config_param :path, :dynamic_string
+      config_param :key, :record_accessor, default: '$.section.default'
+    end
+
+    def extract_placeholders(str, chunk)
+      str.gsub('${tag}', chunk)
+    end
+  end
+
   class ExampleWithCustomSection
     include Fluent::Configurable
     config_param :name_param, :string
@@ -1537,6 +1584,104 @@ module Fluent::Config
         end
       end
     end
+    sub_test_case ':record_accessor type' do
+      test 'converts the configured value into a RecordAccessor' do
+        obj = ConfigurableSpec::ExampleWithRecordAccessor.new
+        obj.configure(config_element('ROOT', '', {'key' => '$.author.name'}, []))
+
+        assert_instance_of Fluent::PluginHelper::RecordAccessor::Accessor, obj.key
+        assert_equal ['author', 'name'], obj.key.keys
+        assert_equal 'tagomoris', obj.key.call({'author' => {'name' => 'tagomoris'}})
+      end
+
+      test 'keeps a non-nested key as it is' do
+        obj = ConfigurableSpec::ExampleWithRecordAccessor.new
+        obj.configure(config_element('ROOT', '', {'key' => 'author'}, []))
+
+        assert_equal 'author', obj.key.keys
+        assert_equal 'tagomoris', obj.key.call({'author' => 'tagomoris'})
+      end
+
+      test 'converts default values too' do
+        obj = ConfigurableSpec::ExampleWithRecordAccessor.new
+        obj.configure(config_element('ROOT', '', {'key' => 'key'}, []))
+
+        assert_instance_of Fluent::PluginHelper::RecordAccessor::Accessor, obj.key_with_default
+        assert_equal ['default', 'key'], obj.key_with_default.keys
+        assert_nil obj.key_with_nil
+      end
+
+      test 'raises a configuration error for an invalid expression' do
+        obj = ConfigurableSpec::ExampleWithRecordAccessor.new
+        assert_raise Fluent::ConfigError.new('empty keys in dot notation') do
+          obj.configure(config_element('ROOT', '', {'key' => '$.'}, []))
+        end
+      end
+    end
+
+    sub_test_case ':dynamic_string type' do
+      test 'converts the configured value into a DynamicString' do
+        obj = ConfigurableSpec::ExampleWithDynamicString.new
+        obj.configure(config_element('ROOT', '', {'path' => '/path/to/${tag}.log'}, []))
+
+        assert_instance_of Fluent::Config::DynamicString, obj.path
+        assert_equal '/path/to/${tag}.log', obj.path.string
+        assert_equal '/path/to/app.web.log', obj.path.call('app.web')
+      end
+
+      test 'converts default values too' do
+        obj = ConfigurableSpec::ExampleWithDynamicString.new
+        obj.configure(config_element('ROOT', '', {'path' => '/tmp/${tag}.log'}, []))
+
+        assert_instance_of Fluent::Config::DynamicString, obj.path_with_default
+        assert_equal '/path/to/${tag}.log', obj.path_with_default.string
+        assert_equal '/path/to/app.web.log', obj.path_with_default.call('app.web')
+        assert_nil obj.path_with_nil
+      end
+
+      test 'raises a configuration error if the plugin does not support placeholders' do
+        obj = ConfigurableSpec::ExampleWithDynamicStringWithoutPlaceholderSupport.new
+        obj.configure(config_element('ROOT', '', {'path' => '/tmp/${tag}.log'}, []))
+
+        assert_raise Fluent::ConfigError.new('ConfigurableSpec::ExampleWithDynamicStringWithoutPlaceholderSupport does not support #extract_placeholders, which :dynamic_string requires') do
+          obj.path.call('app.web')
+        end
+      end
+
+      test 'converts values in subsections too' do
+        obj = ConfigurableSpec::ExampleWithDynamicStringInSection.new
+        obj.configure(config_element('ROOT', '', {}, [
+                        config_element('store', '', {'path' => '/path/to/${tag}.log'}),
+                      ]))
+
+        store = obj.store.first
+        assert_instance_of Fluent::Config::DynamicString, store.path
+        assert_equal '/path/to/app.web.log', store.path.call('app.web')
+        assert_instance_of Fluent::PluginHelper::RecordAccessor::Accessor, store.key
+        assert_equal ['section', 'default'], store.key.keys
+      end
+
+      test 'converts an argument and its default value too' do
+        obj = ConfigurableSpec::ExampleWithPluginDependentTypesAsArgument.new
+        obj.configure(config_element('ROOT', '', {}, [
+                        config_element('store', '/path/to/${tag}.log', {'key' => '$.key'}),
+                      ]))
+
+        store = obj.store.first
+        assert_instance_of Fluent::Config::DynamicString, store.path
+        assert_equal '/path/to/app.web.log', store.path.call('app.web')
+
+        obj = ConfigurableSpec::ExampleWithPluginDependentTypesAsArgument.new
+        obj.configure(config_element('ROOT', '', {}, [
+                        config_element('store', '', {'key' => '$.key'}),
+                      ]))
+
+        store = obj.store.first
+        assert_instance_of Fluent::Config::DynamicString, store.path
+        assert_equal '/path/to/app.web.log', store.path.call('app.web')
+      end
+    end
+
     sub_test_case 'enum parameters' do
       test 'list must be specified as an array of symbols'
     end

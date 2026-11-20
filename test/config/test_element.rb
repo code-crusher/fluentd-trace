@@ -272,6 +272,23 @@ CONF
       assert_not_equal(e.inspect, e.to_s)
       assert_equal(expected, e.to_s)
     end
+
+    test 'dump record_accessor and dynamic_string values as strings for v1' do
+      expected = <<-CONF
+<ROOT>
+  key "$.author.name"
+  path "/path/to/file.${tag}.log"
+</ROOT>
+CONF
+      e = element('ROOT', '', {'key' => '$.author.name', 'path' => '/path/to/file.${tag}.log'}, [])
+      type_lookup = ->(type){ Fluent::Configurable.lookup_type(type) }
+      p = Fluent::Config::ConfigureProxy.new("test", type_lookup: type_lookup)
+      p.config_param :key, :record_accessor
+      p.config_param :path, :dynamic_string
+      e.corresponding_proxies << p
+      e.v1_config = true
+      assert_equal(expected, e.to_s)
+    end
   end
 
   sub_test_case '#inspect' do

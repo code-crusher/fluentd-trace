@@ -424,6 +424,41 @@ class OutputTest < Test::Unit::TestCase
       assert { logs.none? { |log| log.include?("${chunk_id}") } }
     end
 
+    sub_test_case 'config_param of :dynamic_string and :record_accessor' do
+      class OutputWithDynamicStringAndRecordAccessor < FluentPluginOutputTest::DummyAsyncOutput
+        config_param :path, :dynamic_string
+        config_param :key, :record_accessor
+
+        # #implement? checks instance_methods(false), so #write has to be
+        # defined here rather than inherited from DummyAsyncOutput
+        def write(chunk)
+        end
+      end
+
+      setup do
+        @o = OutputWithDynamicStringAndRecordAccessor.new
+        @o.configure(config_element('ROOT', '', {
+          'path' => '/mypath/${tag}/${key1}/%Y-%m-%d.log',
+          'key' => '$.data.message',
+        }, [config_element('buffer', 'time,tag,key1', {'timekey' => 60*30, 'timekey_zone' => "+0900"})]))
+      end
+
+      test 'creates a DynamicString which expands placeholders with a chunk' do
+        assert_instance_of Fluent::Config::DynamicString, @o.path
+        assert_equal '/mypath/${tag}/${key1}/%Y-%m-%d.log', @o.path.string
+
+        t = event_time('2016-04-11 20:30:00 +0900')
+        c = create_chunk(timekey: t, tag: 'fluentd.test.output', variables: {key1: 'value1'})
+        assert_equal '/mypath/fluentd.test.output/value1/2016-04-11.log', @o.path.call(c)
+      end
+
+      test 'creates a RecordAccessor which extracts a value from a record' do
+        assert_instance_of Fluent::PluginHelper::RecordAccessor::Accessor, @o.key
+        assert_equal ['data', 'message'], @o.key.keys
+        assert_equal 'hello', @o.key.call({'data' => {'message' => 'hello'}})
+      end
+    end
+
     test '#extract_placeholders logs warn message with not replaced key' do
       @i.configure(config_element('ROOT', '', {}, [config_element('buffer', '')]))
       tmpl = "/mypath/${key1}/test"

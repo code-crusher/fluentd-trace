@@ -115,7 +115,23 @@ module Fluent
     end
 
     module SectionGenerator
-      def self.generate(proxy, conf, logger, plugin_class, stack = [], strict_config_value = false)
+      # Types which convert a configured string into a value object, so their
+      # default values have to be converted too, unlike other types whose
+      # default values are used as they are.
+      CONVERTED_DEFAULTS_TYPES = [:record_accessor, :dynamic_string].freeze
+      # Types whose conversion needs the plugin instance, which expands the
+      # placeholders in the configured string.
+      PLUGIN_DEPENDENT_TYPES = [:dynamic_string].freeze
+
+      def self.convert_value(val, opts, name, plugin, block)
+        if PLUGIN_DEPENDENT_TYPES.include?(opts[:type])
+          self.instance_exec(val, opts, name, plugin, &block)
+        else
+          self.instance_exec(val, opts, name, &block)
+        end
+      end
+
+      def self.generate(proxy, conf, logger, plugin_class, stack = [], strict_config_value = false, plugin: nil)
         return nil if conf.nil?
 
         section_stack = ""
@@ -125,14 +141,23 @@ module Fluent
 
         section_params = {}
 
+        argument = proxy.argument
         proxy.defaults.each_pair do |name, defval|
           varname = name.to_sym
           section_params[varname] = (defval.dup rescue defval)
+          block, opts = if argument && argument.first == name
+                          argument[1, 2]
+                        else
+                          proxy.params[name]
+                        end
+          if block && !defval.nil? && CONVERTED_DEFAULTS_TYPES.include?(opts[:type])
+            section_params[varname] = convert_value(defval, opts, name, plugin, block)
+          end
         end
 
-        if proxy.argument
+        if argument
           unless conf.arg.nil? || conf.arg.empty?
-            key, block, opts = proxy.argument
+            key, block, opts = argument
             opts = opts.merge(strict: true) if strict_config_value
 
             if conf.arg == :default
@@ -142,7 +167,7 @@ module Fluent
               end
             else
               begin
-                section_params[key] = self.instance_exec(conf.arg, opts, key, &block)
+                section_params[key] = convert_value(conf.arg, opts, key, plugin, block)
               rescue ConfigError => e
                 logger.error "config error in:\n#{conf}" if logger
                 raise e
@@ -176,7 +201,7 @@ module Fluent
               end
             else
               begin
-                section_params[varname] = self.instance_exec(val, opts, name, &block)
+                section_params[varname] = convert_value(val, opts, name, plugin, block)
               rescue ConfigError => e
                 logger.error "config error in:\n#{conf}" if logger
                 raise e
@@ -236,13 +261,13 @@ module Fluent
             raise ConfigError, "'<#{subproxy.name}>' sections are required" + section_stack
           end
           if subproxy.multi?
-            section_params[varname] = elements.map{ |e| generate(subproxy, e, logger, plugin_class, stack + [subproxy.name], strict_config_value) }
+            section_params[varname] = elements.map{ |e| generate(subproxy, e, logger, plugin_class, stack + [subproxy.name], strict_config_value, plugin: plugin) }
           else
             if elements.size > 1
               logger.error "config error in:\n#{conf}" if logger
               raise ConfigError, "'<#{subproxy.name}>' section cannot be written twice or more" + section_stack
             end
-            section_params[varname] = generate(subproxy, elements.first, logger, plugin_class, stack + [subproxy.name], strict_config_value)
+            section_params[varname] = generate(subproxy, elements.first, logger, plugin_class, stack + [subproxy.name], strict_config_value, plugin: plugin)
           end
         end
 

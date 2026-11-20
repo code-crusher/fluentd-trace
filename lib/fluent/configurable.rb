@@ -72,7 +72,7 @@ module Fluent
                 root_proxy.sections[name]
               end
       # take care to raise Fluent::ConfigError if conf mismatched to proxy
-      Fluent::Config::SectionGenerator.generate(proxy, conf, nil, nil)
+      Fluent::Config::SectionGenerator.generate(proxy, conf, nil, nil, plugin: self)
     end
 
     def configure(conf, strict_config_value=false)
@@ -92,7 +92,7 @@ module Fluent
 
       # In the nested section, can't get plugin class through proxies so get plugin class here
       plugin_class = Fluent::Plugin.lookup_type_from_class(proxy.name.to_s)
-      root = Fluent::Config::SectionGenerator.generate(proxy, conf, logger, plugin_class, [], strict_config_value)
+      root = Fluent::Config::SectionGenerator.generate(proxy, conf, logger, plugin_class, [], strict_config_value, plugin: self)
       @config_root_section = root
 
       root.instance_eval{ @params.keys }.each do |param_name|
@@ -130,6 +130,8 @@ module Fluent
       hash: Config::HASH_TYPE,
       array: Config::ARRAY_TYPE,
       regexp: Config::REGEXP_TYPE,
+      record_accessor: Config::RECORD_ACCESSOR_TYPE,
+      dynamic_string: Config::DYNAMIC_STRING_TYPE,
     }.each do |name, type|
       register_type(name, type)
     end

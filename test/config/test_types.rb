@@ -169,6 +169,68 @@ class TestConfigTypes < ::Test::Unit::TestCase
       assert_equal nil, Config::STRING_TYPE.call(nil, {})
     end
 
+    data('plain key' => ['plain', 'plain'],
+         'dot notation' => [['author', 'name'], '$.author.name'],
+         'bracket notation' => [['author', 'name'], "$['author']['name']"])
+    test 'record_accessor' do |(expected, val)|
+      accessor = Config::RECORD_ACCESSOR_TYPE.call(val, {})
+      assert_instance_of Fluent::PluginHelper::RecordAccessor::Accessor, accessor
+      assert_equal expected, accessor.keys
+    end
+
+    test 'record_accessor: converts a key to an accessor' do
+      accessor = Config::RECORD_ACCESSOR_TYPE.call('$.author.name', {})
+      assert_equal 'tagomoris', accessor.call({'author' => {'name' => 'tagomoris'}})
+    end
+
+    test 'record_accessor: plain key is not nested' do
+      accessor = Config::RECORD_ACCESSOR_TYPE.call('author', {})
+      assert_equal 'tagomoris', accessor.call({'author' => 'tagomoris'})
+    end
+
+    test 'record_accessor: invalid expression' do
+      assert_raise(Fluent::ConfigError.new("empty keys in dot notation")) do
+        Config::RECORD_ACCESSOR_TYPE.call('$.', {})
+      end
+    end
+
+    test 'record_accessor: nil' do
+      assert_equal nil, Config::RECORD_ACCESSOR_TYPE.call(nil, {})
+    end
+
+    test 'record_accessor: converts the value to a UTF-8 string' do
+      accessor = Config::RECORD_ACCESSOR_TYPE.call('Märch'.b, {})
+      assert_equal 'Märch', accessor.keys
+      assert_equal Encoding::UTF_8, accessor.keys.encoding
+    end
+
+    test 'dynamic_string' do
+      dynamic_string = Config::DYNAMIC_STRING_TYPE.call('/path/to/file.${tag}.log', {})
+      assert_instance_of Fluent::Config::DynamicString, dynamic_string
+      assert_equal '/path/to/file.${tag}.log', dynamic_string.string
+      assert_equal '/path/to/file.${tag}.log', dynamic_string.to_s
+    end
+
+    test 'dynamic_string: expands placeholders with the plugin' do
+      plugin = Object.new
+      def plugin.extract_placeholders(str, chunk)
+        str.gsub('${tag}', chunk)
+      end
+      dynamic_string = Config::DYNAMIC_STRING_TYPE.call('/path/to/file.${tag}.log', {}, nil, plugin)
+      assert_equal '/path/to/file.app.web.log', dynamic_string.call('app.web')
+    end
+
+    test 'dynamic_string: without the plugin' do
+      dynamic_string = Config::DYNAMIC_STRING_TYPE.call('/path/to/file.${tag}.log', {})
+      assert_raise(Fluent::ConfigError.new("NilClass does not support #extract_placeholders, which :dynamic_string requires")) do
+        dynamic_string.call('app.web')
+      end
+    end
+
+    test 'dynamic_string: nil' do
+      assert_equal nil, Config::DYNAMIC_STRING_TYPE.call(nil, {})
+    end
+
     data('latin' => 'Märch',
          'ascii' => 'ascii',
          'space' => '     ',
@@ -363,6 +425,12 @@ class TestConfigTypes < ::Test::Unit::TestCase
 
     test 'hash w/ nil' do
       assert_equal(nil, Config::HASH_TYPE.call(nil))
+    end
+
+    test 'hash w/ value_type: :record_accessor' do
+      result = Config::HASH_TYPE.call('{"x":"$.a.b"}', {value_type: :record_accessor})
+      assert_instance_of Fluent::PluginHelper::RecordAccessor::Accessor, result['x']
+      assert_equal ['a', 'b'], result['x'].keys
     end
 
     data("strings and integer" => [["1","2",1],   '["1","2",1]', {}],
