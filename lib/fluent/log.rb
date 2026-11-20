@@ -522,36 +522,35 @@ module Fluent
 
       time = Time.now
 
+      if @ignore_repeated_log_interval && ignore_repeated_log?(:last_repeated_stacktrace, time, backtrace)
+        return
+      elsif @suppress_repeated_stacktrace && suppress_stacktrace?(backtrace)
+        suppressed = true
+      else
+        suppressed = false
+      end
+      message = suppressed ? 'suppressed same stacktrace' : backtrace.join("\n")
+      Thread.current[:last_repeated_stacktrace] = CachedLog.new(backtrace, time) if @ignore_repeated_log_interval || @suppress_repeated_stacktrace
+
+      emit_log_event(LEVEL_TEXT[level], time, message)
+
       if @format == :text
         line = caller_line(type, time, 5, level)
-        if @ignore_repeated_log_interval && ignore_repeated_log?(:last_repeated_stacktrace, time, backtrace)
-          return
-        elsif @suppress_repeated_stacktrace && suppress_stacktrace?(backtrace)
-          puts ["  ", line, 'suppressed same stacktrace'].join
-          Thread.current[:last_repeated_stacktrace] = CachedLog.new(backtrace, time) if @ignore_repeated_log_interval
+        if suppressed
+          puts ["  ", line, message].join
         else
           backtrace.each { |msg|
             puts ["  ", line, msg].join
           }
-          Thread.current[:last_repeated_stacktrace] = CachedLog.new(backtrace, time) if @suppress_repeated_stacktrace
         end
       else
         r = {
           'time' => format_time(time),
           'level' => LEVEL_TEXT[level],
+          'message' => message,
         }
         if wid = get_worker_id(type)
           r['worker_id'] = wid
-        end
-
-        if @ignore_repeated_log_interval && ignore_repeated_log?(:last_repeated_stacktrace, time, backtrace)
-          return
-        elsif @suppress_repeated_stacktrace && suppress_stacktrace?(backtrace)
-          r['message'] = 'suppressed same stacktrace'
-          Thread.current[:last_repeated_stacktrace] = CachedLog.new(backtrace, time) if @ignore_repeated_log_interval
-        else
-          r['message'] = backtrace.join("\n")
-          Thread.current[:last_repeated_stacktrace] = CachedLog.new(backtrace, time) if @suppress_repeated_stacktrace
         end
 
         puts JSON.generate(r)
@@ -602,6 +601,12 @@ module Fluent
         end
       end
 
+      emit_log_event(level, time, message, map)
+
+      return time, message
+    end
+
+    def emit_log_event(level, time, message, map = {})
       if @log_event_enabled && !@threads_exclude_events.include?(Thread.current)
         record = map.dup
         record.keys.each {|key|
@@ -610,8 +615,6 @@ module Fluent
         record['message'] = message.dup
         @engine.push_log_event("#{LOG_EVENT_TAG_PREFIX}.#{level}", Fluent::EventTime.from_time(time), record)
       end
-
-      return time, message
     end
 
     def caller_line(type, time, depth, level)
@@ -693,8 +696,8 @@ module Fluent
 
     extend Forwardable
     def_delegators '@logger', :get_worker_id, :enable_color?, :enable_debug, :enable_event,
-      :disable_events, :log_event_enabled, :log_event_enabled=, :event, :caller_line, :puts, :write,
-      :<<, :flush, :reset, :out, :out=, :optional_header, :optional_header=, :optional_attrs,
+      :disable_events, :log_event_enabled, :log_event_enabled=, :event, :emit_log_event, :caller_line,
+      :puts, :write, :<<, :flush, :reset, :out, :out=, :optional_header, :optional_header=, :optional_attrs,
       :optional_attrs=
   end
 

@@ -666,6 +666,80 @@ class LogTest < Test::Unit::TestCase
     log.trace "trace log"
   end
 
+  sub_test_case "backtrace event" do
+    def setup
+      super
+      @logger = ServerEngine::DaemonLogger.new(@log_device, log_level: ServerEngine::DaemonLogger::TRACE)
+    end
+
+    def create_log(opts = {})
+      log = Fluent::Log.new(@logger, opts)
+      log.enable_event(true)
+      log
+    end
+
+    def test_backtrace_is_emitted_as_log_event
+      backtrace = ["line 1", "line 2"]
+      log = create_log
+      engine = log.instance_variable_get(:@engine)
+      mock(engine).push_log_event("fluent.warn", anything, { "message" => backtrace.join("\n") }).once
+      log.warn_backtrace(backtrace)
+    end
+
+    def test_backtrace_is_emitted_as_log_event_with_suppress_repeated_stacktrace
+      backtrace = ["line 1", "line 2"]
+      log = create_log(suppress_repeated_stacktrace: true)
+      engine = log.instance_variable_get(:@engine)
+
+      # 1st: emits the stacktrace itself
+      mock(engine).push_log_event("fluent.warn", anything, { "message" => backtrace.join("\n") }).once
+      log.warn_backtrace(backtrace)
+
+      # 2nd: the same stacktrace is suppressed, but the suppression itself is reported
+      mock(engine).push_log_event("fluent.warn", anything, { "message" => "suppressed same stacktrace" }).once
+      log.warn_backtrace(backtrace)
+    end
+
+    def test_backtrace_is_not_emitted_when_event_is_disabled
+      backtrace = ["line 1", "line 2"]
+      log = create_log
+      log.enable_event(false)
+      engine = log.instance_variable_get(:@engine)
+      mock(engine).push_log_event(anything, anything, anything).never
+      log.warn_backtrace(backtrace)
+    end
+
+    def test_backtrace_is_not_emitted_in_excluded_thread
+      backtrace = ["line 1", "line 2"]
+      log = create_log
+      log.disable_events(Thread.current)
+      engine = log.instance_variable_get(:@engine)
+      mock(engine).push_log_event(anything, anything, anything).never
+      log.warn_backtrace(backtrace)
+    end
+
+    def test_backtrace_is_not_emitted_with_ignore_repeated_log_interval
+      backtrace = ["line 1", "line 2"]
+      log = create_log(ignore_repeated_log_interval: 10)
+      engine = log.instance_variable_get(:@engine)
+      mock(engine).push_log_event("fluent.warn", anything, { "message" => backtrace.join("\n") }).once
+      log.warn_backtrace(backtrace)
+      # The same backtrace within the interval is not emitted at all
+      mock(engine).push_log_event(anything, anything, anything).never
+      Timecop.freeze(@timestamp + 5)
+      log.warn_backtrace(backtrace)
+    end
+
+    def test_backtrace_is_emitted_as_log_event_with_json_format
+      backtrace = ["line 1", "line 2"]
+      log = create_log
+      log.format = :json
+      engine = log.instance_variable_get(:@engine)
+      mock(engine).push_log_event("fluent.warn", anything, { "message" => backtrace.join("\n") }).once
+      log.warn_backtrace(backtrace)
+    end
+  end
+
   def test_level_reload
     dl_opts = {}
     dl_opts[:log_level] = ServerEngine::DaemonLogger::TRACE
