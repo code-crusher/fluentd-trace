@@ -70,6 +70,8 @@ module Fluent::Plugin
     config_param :source_address_key, :string, default: nil
     desc "The field name of the client's hostname."
     config_param :source_hostname_key, :string, default: nil
+    desc "The field name of the subject of the client certificate. This is available only with TLS transport and client certificate authentication."
+    config_param :client_certificate_subject_key, :string, default: nil
 
     desc "New tag instead of incoming tag"
     config_param :tag, :string, default: nil
@@ -118,7 +120,13 @@ module Fluent::Plugin
           raise Fluent::ConfigError, "resolve_hostname must be true with source_hostname_key"
         end
       end
-      @enable_field_injection = @source_address_key || @source_hostname_key
+      @enable_field_injection = @source_address_key || @source_hostname_key || @client_certificate_subject_key
+
+      if @client_certificate_subject_key
+        unless @transport_config && @transport_config.protocol == :tls && @transport_config.client_cert_auth
+          raise Fluent::ConfigError, "client_certificate_subject_key is available only with TLS transport and client_cert_auth"
+        end
+      end
 
       raise Fluent::ConfigError, "'tag' parameter must not be empty" if @tag && @tag.empty?
       raise Fluent::ConfigError, "'add_tag_prefix' parameter must not be empty" if @add_tag_prefix && @add_tag_prefix.empty?
@@ -357,8 +365,7 @@ module Fluent::Plugin
         return if record.nil?
         time = Fluent::EventTime.now if time.to_i == 0
         if @enable_field_injection
-          record[@source_address_key] = conn.remote_addr if @source_address_key
-          record[@source_hostname_key] = conn.remote_host if @source_hostname_key
+          record.update(source_info_fields(conn))
         end
         router.emit(tag, time, record)
         option = msg[3]
@@ -393,31 +400,23 @@ module Fluent::Plugin
     end
 
     def add_source_info(es, conn)
+      fields = source_info_fields(conn)
       new_es = Fluent::MultiEventStream.new
-      if @source_address_key && @source_hostname_key
-        address = conn.remote_addr
-        hostname = conn.remote_host
-        es.each { |time, record|
-          record[@source_address_key] = address
-          record[@source_hostname_key] = hostname
-          new_es.add(time, record)
-        }
-      elsif @source_address_key
-        address = conn.remote_addr
-        es.each { |time, record|
-          record[@source_address_key] = address
-          new_es.add(time, record)
-        }
-      elsif @source_hostname_key
-        hostname = conn.remote_host
-        es.each { |time, record|
-          record[@source_hostname_key] = hostname
-          new_es.add(time, record)
-        }
-      else
-        raise "BUG: don't call this method in this case"
-      end
+      es.each { |time, record|
+        record.update(fields)
+        new_es.add(time, record)
+      }
       new_es
+    end
+
+    def source_info_fields(conn)
+      fields = {}
+      fields[@source_address_key] = conn.remote_addr if @source_address_key
+      fields[@source_hostname_key] = conn.remote_host if @source_hostname_key
+      if @client_certificate_subject_key && (cert = conn.peer_cert)
+        fields[@client_certificate_subject_key] = cert.subject.to_utf8
+      end
+      fields
     end
 
     def select_authenticate_users(node, username)

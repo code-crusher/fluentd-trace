@@ -39,7 +39,7 @@ class ForwardInputTest < Test::Unit::TestCase
   end
   LOCALHOST_HOSTNAME_GETTER = ->(){sock = UDPSocket.new(::Socket::AF_INET); sock.do_not_reverse_lookup = false; sock.connect("127.0.0.1", 2048); sock.peeraddr[2] }
   LOCALHOST_HOSTNAME = LOCALHOST_HOSTNAME_GETTER.call
-  DUMMY_SOCK = Struct.new(:remote_host, :remote_addr, :remote_port).new(LOCALHOST_HOSTNAME, "127.0.0.1", 0)
+  DUMMY_SOCK = Struct.new(:remote_host, :remote_addr, :remote_port, :peer_cert).new(LOCALHOST_HOSTNAME, "127.0.0.1", 0, nil)
 
   def config_auth
     base_config + %[
@@ -1346,6 +1346,168 @@ EOL
         assert_equal DUMMY_SOCK.remote_addr, record['source_address']
       end
     }
+  end
+
+  sub_test_case 'client_certificate_subject_key feature' do
+    CLIENT_CERT_SUBJECT = OpenSSL::X509::Name.parse("/C=US/CN=client.testing.fluentd.org")
+
+    def create_certificate(subject, issuer: subject, signing_key: nil, ca: false)
+      key = OpenSSL::PKey::RSA.new(2048)
+      cert = OpenSSL::X509::Certificate.new
+      cert.version = 2
+      cert.serial = rand(2**(8*10))
+      cert.subject = subject
+      cert.issuer = issuer
+      cert.public_key = key.public_key
+      cert.not_before = Time.at(0)
+      cert.not_after = Time.now + 86400
+      if ca
+        ef = OpenSSL::X509::ExtensionFactory.new
+        cert.add_extension(ef.create_extension('basicConstraints', 'CA:TRUE'))
+      end
+      cert.sign(signing_key || key, "sha256")
+      [cert, key]
+    end
+
+    def write_certificates
+      @certs_dir = File.join(File.dirname(__FILE__), "..", "tmp", "in_forward_client_cert")
+      FileUtils.rm_rf @certs_dir
+      FileUtils.mkdir_p @certs_dir
+
+      ca_cert, ca_key = create_certificate(OpenSSL::X509::Name.parse("/CN=ca.testing.fluentd.org"), ca: true)
+      server_cert, server_key = create_certificate(OpenSSL::X509::Name.parse("/CN=server.testing.fluentd.org"), issuer: ca_cert.subject, signing_key: ca_key)
+      client_cert, client_key = create_certificate(CLIENT_CERT_SUBJECT, issuer: ca_cert.subject, signing_key: ca_key)
+
+      @ca_cert_path = File.join(@certs_dir, "ca_cert.pem")
+      @server_cert_path = File.join(@certs_dir, "server_cert.pem")
+      @server_key_path = File.join(@certs_dir, "server_key.pem")
+      File.write(@ca_cert_path, ca_cert.to_pem)
+      File.write(@server_cert_path, server_cert.to_pem)
+      File.write(@server_key_path, server_key.to_pem)
+      File.chmod(0600, @server_key_path)
+
+      [client_cert, client_key]
+    end
+
+    def tls_config(client_cert_auth: true)
+      base_config + <<EOL
+<transport tls>
+  cert_path #{@server_cert_path}
+  private_key_path #{@server_key_path}
+  ca_path #{@ca_cert_path}
+  client_cert_auth #{client_cert_auth}
+</transport>
+EOL
+    end
+
+    def client_socket(client_cert)
+      Struct.new(:remote_host, :remote_addr, :remote_port, :peer_cert).new(
+        DUMMY_SOCK.remote_host, DUMMY_SOCK.remote_addr, 0, client_cert)
+    end
+
+    data(
+      'without TLS transport' => nil,
+      'with TLS transport but without client_cert_auth' => false,
+    )
+    test 'configure raises an error without TLS client certificate authentication' do |client_cert_auth|
+      write_certificates
+      conf = client_cert_auth.nil? ? base_config : tls_config(client_cert_auth: client_cert_auth)
+      assert_raise(Fluent::ConfigError.new("client_certificate_subject_key is available only with TLS transport and client_cert_auth")) do
+        create_driver(conf + "client_certificate_subject_key client_cert_subject")
+      end
+    end
+
+    test 'message protocol' do
+      client_cert, _ = write_certificates
+      sock = client_socket(client_cert)
+
+      @d = d = create_driver(tls_config + "client_certificate_subject_key client_cert_subject")
+
+      time = event_time("2011-01-02 13:14:15 UTC")
+      events = [
+        ["tag1", time, {"a" => 1}],
+        ["tag1", time, {"a" => 2}],
+      ]
+      d.run(expect_records: events.size) do
+        events.each do |tag, time, record|
+          d.instance.send(:on_message, [tag, time, record], 0, sock)
+        end
+      end
+
+      d.events.each do |_tag, _time, record|
+        assert_equal client_cert.subject.to_utf8, record['client_cert_subject']
+      end
+    end
+
+    test 'forward protocol' do
+      client_cert, _ = write_certificates
+      sock = client_socket(client_cert)
+
+      @d = d = create_driver(tls_config + "client_certificate_subject_key client_cert_subject")
+
+      time = event_time("2011-01-02 13:14:15 UTC")
+      entries = [[time, {"a" => 1}], [time, {"a" => 2}]]
+      d.run(expect_records: entries.size) do
+        d.instance.send(:on_message, ["tag1", entries], 0, sock)
+      end
+
+      d.events.each do |_tag, _time, record|
+        assert_equal client_cert.subject.to_utf8, record['client_cert_subject']
+      end
+    end
+
+    test 'packed forward protocol' do
+      client_cert, _ = write_certificates
+      sock = client_socket(client_cert)
+
+      @d = d = create_driver(tls_config + "client_certificate_subject_key client_cert_subject")
+
+      time = event_time("2011-01-02 13:14:15 UTC")
+      entries = ''
+      Fluent::MessagePackFactory.msgpack_packer(entries).write([time, {"a" => 1}]).write([time, {"a" => 2}]).flush
+      d.run(expect_records: 2) do
+        d.instance.send(:on_message, ["tag1", entries], 0, sock)
+      end
+
+      d.events.each do |_tag, _time, record|
+        assert_equal client_cert.subject.to_utf8, record['client_cert_subject']
+      end
+    end
+
+    test 'does not inject the key when the client has no certificate' do
+      write_certificates
+      @d = d = create_driver(tls_config + "client_certificate_subject_key client_cert_subject")
+
+      time = event_time("2011-01-02 13:14:15 UTC")
+      d.run(expect_records: 1) do
+        d.instance.send(:on_message, ["tag1", time, {"a" => 1}], 0, DUMMY_SOCK)
+      end
+
+      assert_false d.events.first[2].has_key?('client_cert_subject')
+    end
+
+    test 'injects the subject through a real TLS connection' do
+      client_cert, client_key = write_certificates
+      @d = d = create_driver(tls_config + "client_certificate_subject_key client_cert_subject")
+
+      time = event_time("2011-01-02 13:14:15 UTC")
+      d.run(expect_records: 1) do
+        context = OpenSSL::SSL::SSLContext.new
+        context.cert = client_cert
+        context.key = client_key
+        context.verify_mode = OpenSSL::SSL::VERIFY_NONE
+        sock = OpenSSL::SSL::SSLSocket.new(TCPSocket.new('127.0.0.1', @port), context)
+        sock.sync_close = true
+        sock.connect
+        begin
+          sock.write(["tag1", time, {"a" => 1}].to_msgpack)
+        ensure
+          sock.close
+        end
+      end
+
+      assert_equal CLIENT_CERT_SUBJECT.to_utf8, d.events.first[2]['client_cert_subject']
+    end
   end
 
   # TODO heartbeat

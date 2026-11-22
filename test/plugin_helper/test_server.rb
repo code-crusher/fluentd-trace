@@ -965,6 +965,21 @@ class ServerPluginHelperTest < Test::Unit::TestCase
     write_cert_and_key(cert_path, cert, private_key_path, key, passphrase)
   end
 
+  def create_client_pair_signed_by_ca(ca_cert_path, ca_key_path, ca_key_passphrase, cert_path, private_key_path, passphrase)
+    client_options = create_server_options
+    client_options[:common_name] = 'client.testing.fluentd.org'
+    ca_key = OpenSSL::PKey::read(File.read(ca_key_path), ca_key_passphrase)
+    ca_cert = OpenSSL::X509::Certificate.new(File.read(ca_cert_path))
+    cert, key = CertUtil.cert_option_generate_pair(client_options, ca_cert.subject)
+    ef = OpenSSL::X509::ExtensionFactory.new
+    cert.add_extension(ef.create_extension('basicConstraints', 'CA:FALSE'))
+    cert.add_extension(ef.create_extension('nsCertType', 'client'))
+    cert.add_extension(ef.create_extension('extendedKeyUsage', 'clientAuth'))
+    cert.sign(ca_key, client_options[:digest].to_s)
+    write_cert_and_key(cert_path, cert, private_key_path, key, passphrase)
+    return cert
+  end
+
   def create_server_pair_signed_by_ca(ca_cert_path, ca_key_path, ca_key_passphrase, cert_path, private_key_path, passphrase)
     cert, key, _ = CertUtil.cert_option_generate_server_pair_by_ca(ca_cert_path, ca_key_path, ca_key_passphrase, create_server_options)
     write_cert_and_key(cert_path, cert, private_key_path, key, passphrase)
@@ -1565,6 +1580,84 @@ class ServerPluginHelperTest < Test::Unit::TestCase
 
     test 'can keep connections alive for tls if keepalive specified' do
       # pend "not implemented yet"
+    end
+
+    sub_test_case '#peer_cert' do
+      def open_tls_session_with_client_cert(addr, port, cert_path, key_path)
+        context = OpenSSL::SSL::SSLContext.new
+        context.verify_mode = OpenSSL::SSL::VERIFY_NONE
+        context.cert = OpenSSL::X509::Certificate.new(File.read(cert_path))
+        context.key = OpenSSL::PKey.read(File.read(key_path))
+        Fluent::TLS.set_version_to_context(context, Fluent::TLS::DEFAULT_VERSION, nil, nil)
+
+        sock = OpenSSL::SSL::SSLSocket.new(TCPSocket.new(addr, port), context)
+        sock.sync_close = true
+        sock.connect
+        yield sock
+      ensure
+        sock.close rescue nil
+      end
+
+      test 'returns the client certificate when client_cert_auth is enabled' do
+        ca_cert_path = File.join(@certs_dir, "ca_cert.pem")
+        ca_key_path = File.join(@certs_dir, "ca.key.pem")
+        create_ca_pair_signed_by_self(ca_cert_path, ca_key_path, nil)
+
+        client_cert_path = File.join(@certs_dir, "client_cert.pem")
+        client_key_path = File.join(@certs_dir, "client.key.pem")
+        client_cert = create_client_pair_signed_by_ca(ca_cert_path, ca_key_path, nil, client_cert_path, client_key_path, nil)
+
+        tls_options = @tls_options.merge(
+          ca_path: ca_cert_path,
+          client_cert_auth: true,
+        )
+        received = ""
+        peer_certs = []
+        @d.server_create_tls(:s, @port, tls_options: tls_options) do |data, conn|
+          received << data
+          peer_certs << conn.peer_cert
+        end
+
+        open_tls_session_with_client_cert('127.0.0.1', @port, client_cert_path, client_key_path) do |sock|
+          sock.puts "yay"
+        end
+        waiting(10){ sleep 0.1 until received.bytesize == 4 }
+
+        assert_equal 1, peer_certs.size
+        assert_equal client_cert.subject.to_utf8, peer_certs.first.subject.to_utf8
+      end
+
+      test 'returns nil without client certificate authentication' do
+        received = ""
+        peer_certs = []
+        @d.server_create_tls(:s, @port, tls_options: @tls_options) do |data, conn|
+          received << data
+          peer_certs << conn.peer_cert
+        end
+
+        open_tls_session('127.0.0.1', @port, cert_path: @cert_path) do |sock|
+          sock.puts "yay"
+        end
+        waiting(10){ sleep 0.1 until received.bytesize == 4 }
+
+        assert_equal [nil], peer_certs
+      end
+
+      test 'returns nil for TCP connections' do
+        received = ""
+        peer_certs = []
+        @d.server_create_tcp(:s, @port) do |data, conn|
+          received << data
+          peer_certs << conn.peer_cert
+        end
+
+        open_client(:tcp, '127.0.0.1', @port) do |sock|
+          sock.puts "yay"
+        end
+        waiting(10){ sleep 0.1 until received.bytesize == 4 }
+
+        assert_equal [nil], peer_certs
+      end
     end
 
     test 'raises error if plugin registers data callback for connection object from #server_create' do

@@ -432,6 +432,12 @@ module Fluent
           @peeraddr[1]
         end
 
+        # The certificate presented by the peer. It's available only for TLS
+        # connections established with client certificate authentication.
+        def peer_cert
+          nil
+        end
+
         def send(data, flags = 0)
           @sock.send(data, flags)
         end
@@ -489,11 +495,13 @@ module Fluent
         ENABLED_EVENTS = [:data, :write_complete, :close]
 
         attr_accessor :buffer
+        attr_reader :peer_cert
 
         def initialize(sock)
           super("tls", sock, ENABLED_EVENTS)
           @peeraddr = (@sock.to_io.peeraddr rescue PEERADDR_FAILED)
           @buffer = ''
+          @peer_cert = (@sock.peer_cert rescue nil)
         end
 
         def write(data)
@@ -707,6 +715,10 @@ module Fluent
 
           def to_io
             @_handler_socket.to_io
+          end
+
+          def peer_cert
+            @_handler_socket.peer_cert
           end
 
           def data(&callback)
