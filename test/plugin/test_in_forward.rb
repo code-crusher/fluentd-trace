@@ -60,6 +60,21 @@ class ForwardInputTest < Test::Unit::TestCase
     ]
   end
 
+  def config_user_tag_prefix
+    base_config + %[
+      <security>
+        self_hostname localhost
+        shared_key foobar1
+        user_auth true
+        user_tag_prefix true
+        <user>
+          username #{USER_NAME}
+          password #{USER_PASSWORD}
+        </user>
+      </security>
+    ]
+  end
+
   def create_driver(conf=base_config)
     Fluent::Test::Driver::Input.new(Fluent::Plugin::ForwardInput).configure(conf)
   end
@@ -82,6 +97,32 @@ class ForwardInputTest < Test::Unit::TestCase
       assert d.instance.security
       assert_equal 1, d.instance.security.users.size
       assert_equal 1, d.instance.security.clients.size
+    end
+
+    test 'user_tag_prefix is disabled by default' do
+      @d = d = create_driver(config_auth)
+      assert_false d.instance.security.user_tag_prefix
+    end
+
+    test 'user_tag_prefix can be enabled' do
+      @d = d = create_driver(config_user_tag_prefix)
+      assert_true d.instance.security.user_tag_prefix
+    end
+
+    test 'user_tag_prefix requires user_auth' do
+      assert_raise(Fluent::ConfigError.new("user_auth must be enabled with user_tag_prefix")) do
+        create_driver(base_config + %[
+          <security>
+            self_hostname localhost
+            shared_key foobar1
+            user_tag_prefix true
+            <user>
+              username #{USER_NAME}
+              password #{USER_PASSWORD}
+            </user>
+          </security>
+        ])
+      end
     end
 
     data(tag: "tag",
@@ -1346,6 +1387,72 @@ EOL
         assert_equal DUMMY_SOCK.remote_addr, record['source_address']
       end
     }
+  end
+
+  sub_test_case 'user_tag_prefix' do
+    data('message' => :message_protocol,
+         'forward' => :forward_protocol,
+         'packed forward' => :packed_forward_protocol)
+    test 'tags are prefixed with the authenticated username' do |protocol|
+      @d = d = create_driver(config_user_tag_prefix)
+
+      time = event_time("2011-01-02 13:14:15 UTC")
+      records = [
+        {"a"=>1},
+        {"a"=>2},
+      ]
+      expected_tags = protocol == :message_protocol ? ["tag1", "tag2"] : ["tag1", "tag1"]
+
+      d.run(expect_records: records.length, timeout: 20) do
+        case protocol
+        when :message_protocol
+          send_data packer.write(["tag1", time, records[0]]).to_s, auth: true
+          send_data packer.write(["tag2", time, records[1]]).to_s, auth: true
+        when :forward_protocol
+          entries = records.map { |record| [time, record] }
+          send_data packer.write(["tag1", entries]).to_s, auth: true
+        when :packed_forward_protocol
+          entries = ''
+          records.each { |record|
+            packer(entries).write([time, record]).flush
+          }
+          send_data packer.write(["tag1", entries]).to_s, auth: true
+        end
+      end
+
+      assert_equal expected_tags.map { |tag| "#{USER_NAME}.#{tag}" }, d.events.map { |tag, _time, _record| tag }
+      assert_equal records, d.events.map { |_tag, _time, record| record }.sort_by { |record| record['a'] }
+    end
+
+    test 'tag is not prefixed when user_tag_prefix is disabled' do
+      @d = d = create_driver(config_auth)
+
+      time = event_time("2011-01-02 13:14:15 UTC")
+      record = {"a"=>1}
+
+      d.run(expect_records: 1, timeout: 20) do
+        send_data packer.write(["tag1", time, record]).to_s, auth: true
+      end
+
+      assert_equal ["tag1"], d.events.map { |tag, _time, _record| tag }
+    end
+
+    test 'authentication failure does not emit any records' do
+      @d = d = create_driver(config_user_tag_prefix)
+
+      d.run(timeout: 3, shutdown: false) do
+        io = connect
+        begin
+          simulate_auth_sequence(io, SHARED_KEY, USER_NAME, 'wrong password')
+        rescue RuntimeError
+          # expected: authentication fails and connection is closed
+        end
+        io.close rescue nil
+      end
+
+      assert_equal [], d.events
+      d.instance_shutdown
+    end
   end
 
   # TODO heartbeat

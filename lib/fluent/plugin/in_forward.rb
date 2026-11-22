@@ -85,6 +85,8 @@ module Fluent::Plugin
       config_param :user_auth, :bool, default: false
       desc 'Allow anonymous source. <client> sections required if disabled.'
       config_param :allow_anonymous_source, :bool, default: true
+      desc 'If true, add the authenticated username as a prefix to the incoming tag'
+      config_param :user_tag_prefix, :bool, default: false
 
       ### User based authentication
       config_section :user, param_name: :users, required: false, multi: true do
@@ -126,6 +128,9 @@ module Fluent::Plugin
       if @security
         if @security.user_auth && @security.users.empty?
           raise Fluent::ConfigError, "<user> sections required if user_auth enabled"
+        end
+        if @security.user_tag_prefix && !@security.user_auth
+          raise Fluent::ConfigError, "user_auth must be enabled with user_tag_prefix"
         end
         if !@security.allow_anonymous_source && @security.clients.empty?
           raise Fluent::ConfigError, "<client> sections required if allow_anonymous_source disabled"
@@ -206,6 +211,7 @@ module Fluent::Plugin
       state = :established
       nonce = nil
       user_auth_salt = nil
+      username = nil
 
       if @security
         # security enabled session MUST use MessagePack as serialization format
@@ -221,7 +227,7 @@ module Fluent::Plugin
       read_messages(conn) do |msg, chunk_size, serializer|
         case state
         when :pingpong
-          success, reason_or_salt, shared_key = check_ping(msg, conn.remote_addr, user_auth_salt, nonce)
+          success, reason_or_salt, shared_key, username = check_ping(msg, conn.remote_addr, user_auth_salt, nonce)
           unless success
             conn.on(:write_complete) { |c| c.close_after_write_complete }
             send_data.call(serializer, generate_pong(false, reason_or_salt, nonce, shared_key))
@@ -232,7 +238,7 @@ module Fluent::Plugin
           log.debug "connection established", address: conn.remote_addr, port: conn.remote_port
           state = :established
         when :established
-          options = on_message(msg, chunk_size, conn)
+          options = on_message(msg, chunk_size, conn, username)
           if options && r = response(options)
             log.trace "sent response to fluent socket", address: conn.remote_addr, response: r
             conn.on(:write_complete) { |c| c.close } if @deny_keepalive
@@ -290,7 +296,7 @@ module Fluent::Plugin
       nil
     end
 
-    def on_message(msg, chunk_size, conn)
+    def on_message(msg, chunk_size, conn, username = nil)
       if msg.nil?
         # for future TCP heartbeat_request
         return
@@ -314,6 +320,7 @@ module Fluent::Plugin
 
       tag = @tag.dup if @tag
       tag = "#{@add_tag_prefix}.#{tag}" if @add_tag_prefix
+      tag = "#{username}.#{tag}" if @security && @security.user_tag_prefix && username
 
       case entries
       when String
@@ -472,7 +479,7 @@ module Fluent::Plugin
         end
       end
 
-      return true, shared_key_salt, shared_key
+      return true, shared_key_salt, shared_key, username
     end
 
     def generate_pong(auth_result, reason_or_salt, nonce, shared_key)
