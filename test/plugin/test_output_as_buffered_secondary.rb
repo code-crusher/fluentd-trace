@@ -226,20 +226,20 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
       @i.emit_events("test.tag.2", dummy_event_stream())
 
       assert_equal 0, @i.write_count
-      assert_equal 0, @i.num_errors
+      assert_equal 0, @i.num_retries
 
       @i.enqueue_thread_wait
       @i.flush_thread_wakeup
-      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_errors > 0 }
+      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_retries > 0 }
 
       assert{ @i.buffer.queue.size > 0 }
       assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
 
       assert{ @i.write_count > 0 }
-      assert{ @i.num_errors > 0 }
+      assert{ @i.num_retries > 0 }
 
       prev_write_count = @i.write_count
-      prev_num_errors = @i.num_errors
+      prev_num_retries = @i.num_retries
 
       first_failure = @i.retry.start
 
@@ -253,7 +253,7 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
         waiting(4){ sleep 0.1 until @i.write_count > prev_write_count }
 
         prev_write_count = @i.write_count
-        prev_num_errors = @i.num_errors
+        prev_num_retries = @i.num_retries
 
         # next step is on secondary
         now = first_failure + 60 * 0.8 + 10
@@ -265,9 +265,9 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
       waiting(4){ sleep 0.1 until @i.write_count > prev_write_count }
 
       current_write_count = @i.write_count
-      current_num_errors = @i.num_errors
+      current_num_retries = @i.num_retries
       assert{ current_write_count > prev_write_count }
-      assert{ current_num_errors == prev_num_errors }
+      assert{ current_num_retries == prev_num_retries }
 
       assert_nil @i.retry
 
@@ -278,6 +278,7 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
       logs = @i.log.out.logs
       waiting(4){ sleep 0.1 until logs.any?{|l| l.include?("[warn]: retry succeeded by secondary.") } }
       assert{ logs.any?{|l| l.include?("[warn]: retry succeeded by secondary.") } }
+      assert_equal 0, @i.num_errors
     end
 
     test 'secondary can do non-delayed commit even if primary do delayed commit' do
@@ -307,21 +308,21 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
       @i.emit_events("test.tag.2", dummy_event_stream())
 
       assert_equal 0, @i.write_count
-      assert_equal 0, @i.num_errors
+      assert_equal 0, @i.num_retries
       assert_equal 0, @i.write_secondary_count
 
       @i.enqueue_thread_wait
       @i.flush_thread_wakeup
-      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_errors > 0 }
+      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_retries > 0 }
 
       assert{ @i.buffer.queue.size > 0 }
       assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
 
       assert{ @i.write_count > 0 }
-      assert{ @i.num_errors > 0 }
+      assert{ @i.num_retries > 0 }
 
       prev_write_count = @i.write_count
-      prev_num_errors = @i.num_errors
+      prev_num_retries = @i.num_retries
 
       first_failure = @i.retry.start
 
@@ -335,7 +336,7 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
         waiting(4){ sleep 0.1 until @i.write_count > prev_write_count }
 
         prev_write_count = @i.write_count
-        prev_num_errors = @i.num_errors
+        prev_num_retries = @i.num_retries
 
         # next step is on secondary
         now = first_failure + 60 * 0.8 + 10
@@ -347,7 +348,7 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
       waiting(4){ sleep 0.1 until @i.write_count > prev_write_count }
 
       assert{ @i.write_count > prev_write_count }
-      assert{ @i.num_errors == prev_num_errors }
+      assert{ @i.num_retries == prev_num_retries }
 
       assert{ @i.write_secondary_count > 0 }
 
@@ -390,20 +391,20 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
       @i.emit_events("test.tag.2", dummy_event_stream())
 
       assert_equal 0, @i.write_count
-      assert_equal 0, @i.num_errors
+      assert_equal 0, @i.num_retries
 
       @i.enqueue_thread_wait
       @i.flush_thread_wakeup
-      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_errors > 0 }
+      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_retries > 0 }
 
       assert{ @i.buffer.queue.size > 0 }
       assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
 
       assert{ @i.write_count > 0 }
-      assert{ @i.num_errors > 0 }
+      assert{ @i.num_retries > 0 }
 
       prev_write_count = @i.write_count
-      prev_num_errors = @i.num_errors
+      prev_num_retries = @i.num_retries
 
       first_failure = @i.retry.start
 
@@ -417,7 +418,7 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
         waiting(4){ sleep 0.1 until @i.write_count > prev_write_count }
 
         prev_write_count = @i.write_count
-        prev_num_errors = @i.num_errors
+        prev_num_retries = @i.num_retries
 
         # next step is on secondary
         now = first_failure + 60 * 0.8 + 10
@@ -429,7 +430,7 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
       waiting(4){ sleep 0.1 until @i.write_count > prev_write_count }
 
       assert{ @i.write_count > prev_write_count }
-      assert{ @i.num_errors == prev_num_errors }
+      assert{ @i.num_retries == prev_num_retries }
 
       assert @i.retry
 
@@ -483,20 +484,20 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
       @i.emit_events("test.tag.2", dummy_event_stream())
 
       assert_equal 0, @i.write_count
-      assert_equal 0, @i.num_errors
+      assert_equal 0, @i.num_retries
 
       @i.enqueue_thread_wait
       @i.flush_thread_wakeup
-      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_errors > 0 }
+      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_retries > 0 }
 
       assert{ @i.buffer.queue.size > 0 }
       assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
 
       assert{ @i.write_count > 0 }
-      assert{ @i.num_errors > 0 }
+      assert{ @i.num_retries > 0 }
 
       prev_write_count = @i.write_count
-      prev_num_errors = @i.num_errors
+      prev_num_retries = @i.num_retries
 
       first_failure = @i.retry.start
 
@@ -510,7 +511,7 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
         waiting(4){ sleep 0.1 until @i.write_count > prev_write_count }
 
         prev_write_count = @i.write_count
-        prev_num_errors = @i.num_errors
+        prev_num_retries = @i.num_retries
 
         # next step is on secondary
         now = first_failure + 60 * 0.8 + 10
@@ -522,7 +523,7 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
       waiting(4){ sleep 0.1 until @i.write_count > prev_write_count }
 
       assert{ @i.write_count > prev_write_count }
-      assert{ @i.num_errors == prev_num_errors }
+      assert{ @i.num_retries == prev_num_retries }
 
       assert @i.retry
 
@@ -574,20 +575,20 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
       Timecop.freeze( now )
 
       assert_equal 0, @i.write_count
-      assert_equal 0, @i.num_errors
+      assert_equal 0, @i.num_retries
 
       @i.enqueue_thread_wait
       @i.flush_thread_wakeup
-      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_errors > 0 }
+      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_retries > 0 }
 
       assert{ @i.buffer.queue.size == 2 }
       assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
 
       assert{ @i.write_count > 0 }
-      assert{ @i.num_errors > 0 }
+      assert{ @i.num_retries > 0 }
 
       prev_write_count = @i.write_count
-      prev_num_errors = @i.num_errors
+      prev_num_retries = @i.num_retries
 
       first_failure = @i.retry.start
 
@@ -605,7 +606,7 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
       waiting(4){ sleep 0.1 until chunks.size == 2 }
 
       assert{ @i.write_count > prev_write_count }
-      assert{ @i.num_errors == prev_num_errors }
+      assert{ @i.num_retries == prev_num_retries }
 
       assert @i.retry
 
@@ -669,20 +670,20 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
       @i.emit_events("test.tag.2", dummy_event_stream())
 
       assert_equal 0, @i.write_count
-      assert_equal 0, @i.num_errors
+      assert_equal 0, @i.num_retries
 
       @i.enqueue_thread_wait
       @i.flush_thread_wakeup
-      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_errors > 0 }
+      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_retries > 0 }
 
       assert{ @i.buffer.queue.size > 0 }
       assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
 
       assert{ @i.write_count > 0 }
-      assert{ @i.num_errors > 0 }
+      assert{ @i.num_retries > 0 }
 
       prev_write_count = @i.write_count
-      prev_num_errors = @i.num_errors
+      prev_num_retries = @i.num_retries
 
       first_failure = @i.retry.start
 
@@ -696,7 +697,7 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
       waiting(4){ sleep 0.1 until @i.write_count > prev_write_count }
 
       assert{ @i.write_count > prev_write_count }
-      assert{ @i.num_errors > prev_num_errors }
+      assert{ @i.num_retries > prev_num_retries }
 
       assert @i.retry
 
@@ -741,18 +742,18 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
       @i.emit_events("test.tag.2", dummy_event_stream())
 
       assert_equal 0, @i.write_count
-      assert_equal 0, @i.num_errors
+      assert_equal 0, @i.num_retries
       assert_equal 0, @i.write_secondary_count
 
       @i.enqueue_thread_wait
       @i.flush_thread_wakeup
-      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_errors > 0 }
+      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_retries > 0 }
 
       assert{ @i.buffer.queue.size > 0 }
       assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
 
       assert{ @i.write_count > 0 }
-      assert{ @i.num_errors > 0 }
+      assert{ @i.num_retries > 0 }
 
       prev_write_count = @i.write_count
       first_failure = @i.retry.start
@@ -812,20 +813,20 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
       @i.emit_events("test.tag.2", dummy_event_stream())
 
       assert_equal 0, @i.write_count
-      assert_equal 0, @i.num_errors
+      assert_equal 0, @i.num_retries
 
       @i.enqueue_thread_wait
       @i.flush_thread_wakeup
-      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_errors > 0 }
+      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_retries > 0 }
 
       assert{ @i.buffer.queue.size > 0 }
       assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
 
       assert{ @i.write_count > 0 }
-      assert{ @i.num_errors > 0 }
+      assert{ @i.num_retries > 0 }
 
       prev_write_count = @i.write_count
-      prev_num_errors = @i.num_errors
+      prev_num_retries = @i.num_retries
 
       first_failure = @i.retry.start
 
@@ -844,10 +845,10 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
         waiting(4){ sleep 0.1 until @i.write_count > prev_write_count }
 
         assert{ @i.write_count > prev_write_count }
-        assert{ @i.num_errors > prev_num_errors }
+        assert{ @i.num_retries > prev_num_retries }
 
         prev_write_count = @i.write_count
-        prev_num_errors = @i.num_errors
+        prev_num_retries = @i.num_retries
 
         break if @i.retry.secondary?
 
@@ -876,13 +877,14 @@ class BufferedOutputSecondaryTest < Test::Unit::TestCase
         waiting(4){ sleep 0.1 until @i.write_count > prev_write_count }
 
         assert{ @i.write_count > prev_write_count }
-        assert{ @i.num_errors > prev_num_errors }
+        assert{ @i.num_retries > prev_num_retries }
 
         break if @i.buffer.queue.size == 0
       end
 
       logs = @i.log.out.logs
       assert{ logs.any?{|l| l.include?("[error]: Hit limit for retries. dropping all chunks in the buffer queue.") } }
+      assert_equal 1, @i.num_errors
 
       assert{ now >= first_failure + 60 }
     end

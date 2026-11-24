@@ -198,6 +198,7 @@ module Fluent
 
         # TODO: well organized counters
         @num_errors_metrics = nil
+        @num_retries_metrics = nil
         @emit_count_metrics = nil
         @emit_records_metrics = nil
         @emit_size_metrics = nil
@@ -268,6 +269,7 @@ module Fluent
         super
 
         @num_errors_metrics = metrics_create(namespace: "fluentd", subsystem: "output", name: "num_errors", help_text: "Number of count num errors")
+        @num_retries_metrics = metrics_create(namespace: "fluentd", subsystem: "output", name: "num_retries", help_text: "Number of count num retries")
         @emit_count_metrics = metrics_create(namespace: "fluentd", subsystem: "output", name: "emit_count", help_text: "Number of count emits")
         @emit_records_metrics = metrics_create(namespace: "fluentd", subsystem: "output", name: "emit_records", help_text: "Number of emit records")
         @emit_size_metrics =  metrics_create(namespace: "fluentd", subsystem: "output", name: "emit_size", help_text: "Total size of emit events")
@@ -1367,7 +1369,7 @@ module Fluent
 
       def update_retry_state(chunk_id, using_secondary, error = nil)
         @retry_mutex.synchronize do
-          @num_errors_metrics.inc
+          @num_retries_metrics.inc
           chunk_id_hex = dump_unique_id_hex(chunk_id)
 
           unless @retry
@@ -1412,6 +1414,8 @@ module Fluent
       end
 
       def handle_limit_reached(error)
+        # Retries gave up, so the chunks in the queue are really lost here.
+        @num_errors_metrics.inc
         if error
           records = @buffer.queued_records
           msg = "Hit limit for retries. dropping all chunks in the buffer queue."
@@ -1641,9 +1645,10 @@ module Fluent
         stats = {
           'emit_records' => @emit_records_metrics.get,
           'emit_size' => @emit_size_metrics.get,
+          'num_errors' => @num_errors_metrics.get,
           # Respect original name
           # https://github.com/fluent/fluentd/blob/45c7b75ba77763eaf87136864d4942c4e0c5bfcd/lib/fluent/plugin/in_monitor_agent.rb#L284
-          'retry_count' => @num_errors_metrics.get,
+          'retry_count' => @num_retries_metrics.get,
           'emit_count' => @emit_count_metrics.get,
           'write_count' => @write_count_metrics.get,
           'write_secondary_count' => @write_secondary_count_metrics.get,

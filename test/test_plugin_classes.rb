@@ -147,6 +147,7 @@ module FluentTest
       @events = Hash.new { |h, k| h[k] = [] }
       # stub metrics instances
       @num_errors_metrics = FluentTest::FluentTestCounterMetrics.new
+      @num_retries_metrics = FluentTest::FluentTestCounterMetrics.new
       @emit_count_metrics = FluentTest::FluentTestCounterMetrics.new
       @emit_records_metrics = FluentTest::FluentTestCounterMetrics.new
       @emit_size_metrics = FluentTest::FluentTestCounterMetrics.new
@@ -278,6 +279,7 @@ module FluentTest
       super
       # stub metrics instances
       @num_errors_metrics = FluentTest::FluentTestCounterMetrics.new
+      @num_retries_metrics = FluentTest::FluentTestCounterMetrics.new
       @emit_count_metrics = FluentTest::FluentTestCounterMetrics.new
       @emit_records_metrics = FluentTest::FluentTestCounterMetrics.new
       @emit_size_metrics = FluentTest::FluentTestCounterMetrics.new

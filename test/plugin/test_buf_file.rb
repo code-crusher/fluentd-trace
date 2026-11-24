@@ -1652,10 +1652,12 @@ class FileBufferTest < Test::Unit::TestCase
         start_plugin(output)
 
         emit_events(output, tag, dummy_event_stream)
-        wait { output.write_count == 1 and output.num_errors == 1 }
+        wait { output.write_count == 1 and output.num_retries == 1 }
+        assert { output.num_errors == 0 }
 
         proceed_to_next_retry(output)
-        wait { output.write_count == 2 and output.num_errors == 2 }
+        wait { output.write_count == 2 and output.num_retries == 2 }
+        assert { output.num_errors == 1 }
         wait { Dir.empty?(@buf_dir) }
 
         # Assert evacuated files
@@ -1714,13 +1716,15 @@ class FileBufferTest < Test::Unit::TestCase
         start_plugin(output)
 
         reach_retry_limit = lambda do
+          retries = output.num_retries
           errors = output.num_errors
           emit_events(output, tag, dummy_event_stream)
-          wait { output.num_errors == errors + 1 }
+          wait { output.num_retries == retries + 1 }
           wait { output.retry }
           proceed_to_next_retry(output)
-          wait { output.num_errors == errors + 2 }
+          wait { output.num_retries == retries + 2 }
           wait { output.retry.nil? }
+          assert { output.num_errors == errors + 1 }
           Dir.glob(File.join(evacuate_dir(plugin_id), "*.log")).size
         end
 

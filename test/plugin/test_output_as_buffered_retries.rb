@@ -180,7 +180,8 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
       waiting(4){ Thread.pass until @i.write_count > 0 }
 
       assert{ @i.write_count > 0 }
-      assert{ @i.num_errors > 0 }
+      assert{ @i.num_retries > 0 }
+      assert_equal 0, @i.num_errors
 
       now = @i.next_flush_time
       Timecop.freeze( now )
@@ -188,7 +189,65 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
       waiting(4){ Thread.pass until @i.write_count > 1 }
 
       assert{ @i.write_count > 1 }
-      assert{ @i.num_errors > 1 }
+      assert{ @i.num_retries > 1 }
+      assert_equal 0, @i.num_errors
+    end
+
+    test 'does not count num_errors for flush failures which are resolved by retries' do
+      attempts = 0
+      chunk_key = 'tag'
+      hash = {
+        'flush_interval' => 1,
+        'flush_thread_burst_interval' => 0.1,
+        'retry_type' => :periodic,
+        'retry_wait' => 1,
+        'retry_randomize' => false,
+        'retry_max_times' => 10,
+      }
+      @i.configure(config_element('ROOT','',{},[config_element('buffer',chunk_key,hash)]))
+      @i.register(:prefer_buffered_processing){ true }
+      @i.register(:format){|tag,time,record| [tag,time.to_i,record].to_json + "\n" }
+      @i.register(:write){|chunk| attempts += 1; raise "yay, your #write must fail" if attempts <= 2 }
+      @i.start
+      @i.after_start
+
+      @i.interrupt_flushes
+
+      now = Time.parse('2016-04-13 18:33:30 -0700')
+      Timecop.freeze( now )
+
+      @i.emit_events("test.tag.1", dummy_event_stream())
+
+      now = Time.parse('2016-04-13 18:33:32 -0700')
+      Timecop.freeze( now )
+
+      @i.enqueue_thread_wait
+      @i.flush_thread_wakeup
+      waiting(4){ Thread.pass until @i.write_count > 0 && @i.num_retries > 0 }
+
+      assert{ @i.num_retries > 0 }
+      assert_equal 0, @i.num_errors
+
+      # The 2nd attempt also fails...
+      now = @i.next_flush_time
+      Timecop.freeze( now )
+      @i.flush_thread_wakeup
+      waiting(4){ Thread.pass until @i.write_count > 1 }
+
+      assert{ @i.num_retries > 1 }
+      assert_equal 0, @i.num_errors
+
+      # ...and the 3rd attempt succeeds.
+      now = @i.next_flush_time
+      Timecop.freeze( now )
+      @i.flush_thread_wakeup
+      waiting(4){ Thread.pass until @i.buffer.queue.size == 0 }
+
+      assert_equal 3, attempts
+      assert{ @i.num_retries >= 2 }
+      assert_nil @i.retry
+      assert_equal 0, @i.num_errors
+      assert{ @i.log.out.logs.any?{|l| l.include?("[warn]: retry succeeded.") } }
     end
 
     test 'max retry interval is limited by retry_max_interval' do
@@ -219,25 +278,25 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
       @i.enqueue_thread_wait
 
       @i.flush_thread_wakeup
-      waiting(4){ Thread.pass until @i.write_count > 0 && @i.num_errors > 0 }
+      waiting(4){ Thread.pass until @i.write_count > 0 && @i.num_retries > 0 }
 
       assert{ @i.write_count > 0 }
-      assert{ @i.num_errors > 0 }
+      assert{ @i.num_retries > 0 }
 
       prev_write_count = @i.write_count
-      prev_num_errors = @i.num_errors
+      prev_num_retries = @i.num_retries
 
       10.times do
         now = @i.next_flush_time
         Timecop.freeze( now )
         @i.flush_thread_wakeup
-        waiting(4){ Thread.pass until @i.write_count > prev_write_count && @i.num_errors > prev_num_errors }
+        waiting(4){ Thread.pass until @i.write_count > prev_write_count && @i.num_retries > prev_num_retries }
 
         assert{ @i.write_count > prev_write_count }
-        assert{ @i.num_errors > prev_num_errors }
+        assert{ @i.num_retries > prev_num_retries }
 
         prev_write_count = @i.write_count
-        prev_num_errors = @i.num_errors
+        prev_num_retries = @i.num_retries
       end
       # exponential backoff interval: 1 * 2 ** 10 == 1024
       # but it should be limited by retry_max_interval=60
@@ -276,19 +335,21 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
 
       assert_equal 0, @i.write_count
       assert_equal 0, @i.num_errors
+      assert_equal 0, @i.num_retries
 
       @i.enqueue_thread_wait
       @i.flush_thread_wakeup
-      waiting(4){ Thread.pass until @i.write_count > 0 && @i.num_errors > 0 }
+      waiting(4){ Thread.pass until @i.write_count > 0 && @i.num_retries > 0 }
 
       assert{ @i.buffer.queue.size > 0 }
       assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
 
       assert{ @i.write_count > 0 }
-      assert{ @i.num_errors > 0 }
+      assert{ @i.num_retries > 0 }
+      assert_equal 0, @i.num_errors
 
       prev_write_count = @i.write_count
-      prev_num_errors = @i.num_errors
+      prev_num_retries = @i.num_retries
 
       first_failure = @i.retry.start
 
@@ -312,15 +373,15 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
         Timecop.freeze( now )
         @i.enqueue_thread_wait
         @i.flush_thread_wakeup
-        waiting(4){ Thread.pass until @i.write_count > prev_write_count && @i.num_errors > prev_num_errors }
+        waiting(4){ Thread.pass until @i.write_count > prev_write_count && @i.num_retries > prev_num_retries }
 
         assert{ @i.write_count > prev_write_count }
-        assert{ @i.num_errors > prev_num_errors }
+        assert{ @i.num_retries > prev_num_retries }
 
         break if @i.buffer.queue.size == 0
 
         prev_write_count = @i.write_count
-        prev_num_errors = @i.num_errors
+        prev_num_retries = @i.num_retries
 
         assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
       end
@@ -328,6 +389,9 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
 
       assert{ @i.buffer.stage.size == 0 }
       assert{ written_tags.all?('test.tag.1') }
+
+      # Chunks are dropped only when the retry limit is reached
+      assert_equal 1, @i.num_errors
 
       @i.emit_events("test.tag.3", dummy_event_stream())
 
@@ -367,19 +431,21 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
 
       assert_equal 0, @i.write_count
       assert_equal 0, @i.num_errors
+      assert_equal 0, @i.num_retries
 
       @i.enqueue_thread_wait
       @i.flush_thread_wakeup
-      waiting(4){ Thread.pass until @i.write_count > 0 && @i.num_errors > 0 }
+      waiting(4){ Thread.pass until @i.write_count > 0 && @i.num_retries > 0 }
 
       assert{ @i.buffer.queue.size > 0 }
       assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
 
       assert{ @i.write_count > 0 }
-      assert{ @i.num_errors > 0 }
+      assert{ @i.num_retries > 0 }
+      assert_equal 0, @i.num_errors
 
       prev_write_count = @i.write_count
-      prev_num_errors = @i.num_errors
+      prev_num_retries = @i.num_retries
 
       _first_failure = @i.retry.start
 
@@ -391,20 +457,23 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
         Timecop.freeze( now )
         @i.enqueue_thread_wait
         @i.flush_thread_wakeup
-        waiting(4){ Thread.pass until @i.write_count > prev_write_count && @i.num_errors > prev_num_errors }
+        waiting(4){ Thread.pass until @i.write_count > prev_write_count && @i.num_retries > prev_num_retries }
 
         assert{ @i.write_count > prev_write_count }
-        assert{ @i.num_errors > prev_num_errors }
+        assert{ @i.num_retries > prev_num_retries }
 
         break if @i.buffer.queue.size == 0
 
         prev_write_count = @i.write_count
-        prev_num_errors = @i.num_errors
+        prev_num_retries = @i.num_retries
 
         assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
       end
       assert{ @i.buffer.stage.size == 0 }
       assert{ written_tags.all?('test.tag.1') }
+
+      # Chunks are dropped only when the retry limit is reached
+      assert_equal 1, @i.num_errors
 
       @i.emit_events("test.tag.3", dummy_event_stream())
 
@@ -446,16 +515,16 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
 
       @i.enqueue_thread_wait
       @i.flush_thread_wakeup
-      waiting(4) { Thread.pass until @i.write_count > 0 && @i.num_errors > 0 }
+      waiting(4) { Thread.pass until @i.write_count > 0 && @i.num_retries > 0 }
 
       assert { @i.buffer.queue.size > 0 }
       assert { @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
 
       assert { @i.write_count > 0 }
-      assert { @i.num_errors > 0 }
+      assert { @i.num_retries > 0 }
 
       prev_write_count = @i.write_count
-      prev_num_errors = @i.num_errors
+      prev_num_retries = @i.num_retries
 
       20.times do |i| # large times enough
         now = @i.next_flush_time
@@ -463,7 +532,7 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
         Timecop.freeze(now)
         @i.enqueue_thread_wait
         @i.flush_thread_wakeup
-        waiting(4) { Thread.pass until @i.write_count > prev_write_count && @i.num_errors > prev_num_errors }
+        waiting(4) { Thread.pass until @i.write_count > prev_write_count && @i.num_retries > prev_num_retries }
 
         @i.emit_events("test.tag.1", dummy_event_stream())
         assert { @i.buffer.queue.size <= 2 }
@@ -472,7 +541,7 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
         break if @i.buffer.queue.size == 0
 
         prev_write_count = @i.write_count
-        prev_num_errors = @i.num_errors
+        prev_num_retries = @i.num_retries
       end
     end
   end
@@ -511,7 +580,8 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
       waiting(4){ Thread.pass until @i.write_count > 0 }
 
       assert{ @i.write_count > 0 }
-      assert{ @i.num_errors > 0 }
+      assert{ @i.num_retries > 0 }
+      assert_equal 0, @i.num_errors
 
       now = @i.next_flush_time
       Timecop.freeze( now )
@@ -519,7 +589,8 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
       waiting(4){ Thread.pass until @i.write_count > 1 }
 
       assert{ @i.write_count > 1 }
-      assert{ @i.num_errors > 1 }
+      assert{ @i.num_retries > 1 }
+      assert_equal 0, @i.num_errors
     end
 
     test 'output plugin give retries up by retry_timeout, and clear queue in buffer' do
@@ -556,19 +627,21 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
 
       assert_equal 0, @i.write_count
       assert_equal 0, @i.num_errors
+      assert_equal 0, @i.num_retries
 
       @i.enqueue_thread_wait
       @i.flush_thread_wakeup
-      waiting(4){ Thread.pass until @i.write_count > 0 && @i.num_errors > 0 }
+      waiting(4){ Thread.pass until @i.write_count > 0 && @i.num_retries > 0 }
 
       assert{ @i.buffer.queue.size > 0 }
       assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
 
       assert{ @i.write_count > 0 }
-      assert{ @i.num_errors > 0 }
+      assert{ @i.num_retries > 0 }
+      assert_equal 0, @i.num_errors
 
       prev_write_count = @i.write_count
-      prev_num_errors = @i.num_errors
+      prev_num_retries = @i.num_retries
 
       first_failure = @i.retry.start
 
@@ -578,13 +651,13 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
         Timecop.freeze( now )
         @i.enqueue_thread_wait
         @i.flush_thread_wakeup
-        waiting(4){ Thread.pass until @i.write_count > prev_write_count && @i.num_errors > prev_num_errors }
+        waiting(4){ Thread.pass until @i.write_count > prev_write_count && @i.num_retries > prev_num_retries }
 
         assert{ @i.write_count > prev_write_count }
-        assert{ @i.num_errors > prev_num_errors }
+        assert{ @i.num_retries > prev_num_retries }
 
         prev_write_count = @i.write_count
-        prev_num_errors = @i.num_errors
+        prev_num_retries = @i.num_retries
       end
 
       assert{ @i.next_flush_time >= first_failure + 120 }
@@ -602,7 +675,10 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
       now = @i.next_flush_time
       Timecop.freeze( now )
       @i.flush_thread_wakeup
-      waiting(4){ Thread.pass until @i.write_count > prev_write_count && @i.num_errors > prev_num_errors }
+      waiting(4){ Thread.pass until @i.write_count > prev_write_count && @i.num_retries > prev_num_retries }
+
+      # Chunks are dropped only when the retry limit is reached
+      assert_equal 1, @i.num_errors
 
       logs = @i.log.out.logs
 
@@ -652,19 +728,21 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
 
       assert_equal 0, @i.write_count
       assert_equal 0, @i.num_errors
+      assert_equal 0, @i.num_retries
 
       @i.enqueue_thread_wait
       @i.flush_thread_wakeup
-      waiting(4){ Thread.pass until @i.write_count > 0 && @i.num_errors > 0 }
+      waiting(4){ Thread.pass until @i.write_count > 0 && @i.num_retries > 0 }
 
       assert{ @i.buffer.queue.size > 0 }
       assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
 
       assert{ @i.write_count > 0 }
-      assert{ @i.num_errors > 0 }
+      assert{ @i.num_retries > 0 }
+      assert_equal 0, @i.num_errors
 
       prev_write_count = @i.write_count
-      prev_num_errors = @i.num_errors
+      prev_num_retries = @i.num_retries
 
       _first_failure = @i.retry.start
 
@@ -676,21 +754,23 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
         Timecop.freeze( now )
         @i.enqueue_thread_wait
         @i.flush_thread_wakeup
-        waiting(4){ Thread.pass until @i.write_count > prev_write_count && @i.num_errors > prev_num_errors }
+        waiting(4){ Thread.pass until @i.write_count > prev_write_count && @i.num_retries > prev_num_retries }
 
         assert{ @i.write_count > prev_write_count }
-        assert{ @i.num_errors > prev_num_errors }
+        assert{ @i.num_retries > prev_num_retries }
 
         break if @i.buffer.queue.size == 0
 
         prev_write_count = @i.write_count
-        prev_num_errors = @i.num_errors
+        prev_num_retries = @i.num_retries
 
         assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
       end
       assert{ @i.buffer.stage.size == 0 }
       assert{ written_tags.all?('test.tag.1') }
 
+      # Chunks are dropped only when the retry limit is reached
+      assert_equal 1, @i.num_errors
 
       @i.emit_events("test.tag.3", dummy_event_stream())
 
@@ -736,12 +816,15 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
 
       assert_equal(0, @i.write_count)
       assert_equal(0, @i.num_errors)
+      assert_equal(0, @i.num_retries)
 
       @i.enqueue_thread_wait
       @i.flush_thread_wakeup
-      waiting(2){ Thread.pass until @i.write_count == 1 && @i.num_errors == 1 }
+      waiting(2){ Thread.pass until @i.write_count == 1 && @i.num_retries == 1 }
 
       assert(@i.write_count == 1)
+      assert(@i.num_retries == 1)
+      # retry_max_times is 0, so the chunk is dropped at the first failure
       assert(@i.num_errors == 1)
       assert(@i.log.out.logs.any?{|l| l.include?("[error]: Hit limit for retries. dropping all chunks in the buffer queue.") && l.include?("retry_times=0") })
       assert(@i.buffer.queue.size == 0)
@@ -805,16 +888,16 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
 
       @i.enqueue_thread_wait
       @i.flush_thread_wakeup
-      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_errors > 0 }
+      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_retries > 0 }
 
       assert{ @i.buffer.queue.size > 0 }
       assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
 
       assert{ @i.write_count > 0 }
-      assert{ @i.num_errors > 0 }
+      assert{ @i.num_retries > 0 }
 
       prev_write_count = @i.write_count
-      prev_num_errors = @i.num_errors
+      prev_num_retries = @i.num_retries
 
       first_failure = @i.retry.start
 
@@ -824,18 +907,20 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
         Timecop.freeze( now + 1 )
         @i.enqueue_thread_wait
         @i.flush_thread_wakeup
-        waiting(4){ sleep 0.1 until @i.write_count > prev_write_count && @i.num_errors > prev_num_errors }
+        waiting(4){ sleep 0.1 until @i.write_count > prev_write_count && @i.num_retries > prev_num_retries }
 
         assert{ @i.write_count > prev_write_count }
-        assert{ @i.num_errors > prev_num_errors }
+        assert{ @i.num_retries > prev_num_retries }
 
         prev_write_count = @i.write_count
-        prev_num_errors = @i.num_errors
+        prev_num_retries = @i.num_retries
       end
 
       assert{ @i.buffer.queue.size == 2 }
       assert{ @i.retry.steps > 10 }
       assert{ now > first_failure + 3600 }
+      # The retry limit is never reached with retry_forever
+      assert_equal 0, @i.num_errors
     end
 
     test 'retry_timeout and retry_max_times will be ignored if retry_forever is true for periodical retries' do
@@ -877,16 +962,16 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
 
       @i.enqueue_thread_wait
       @i.flush_thread_wakeup
-      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_errors > 0 }
+      waiting(4){ sleep 0.1 until @i.write_count > 0 && @i.num_retries > 0 }
 
       assert{ @i.buffer.queue.size > 0 }
       assert{ @i.buffer.queue.first.metadata.tag == 'test.tag.1' }
 
       assert{ @i.write_count > 0 }
-      assert{ @i.num_errors > 0 }
+      assert{ @i.num_retries > 0 }
 
       prev_write_count = @i.write_count
-      prev_num_errors = @i.num_errors
+      prev_num_retries = @i.num_retries
 
       first_failure = @i.retry.start
 
@@ -896,18 +981,20 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
         Timecop.freeze( now + 1 )
         @i.enqueue_thread_wait
         @i.flush_thread_wakeup
-        waiting(4){ sleep 0.1 until @i.write_count > prev_write_count && @i.num_errors > prev_num_errors }
+        waiting(4){ sleep 0.1 until @i.write_count > prev_write_count && @i.num_retries > prev_num_retries }
 
         assert{ @i.write_count > prev_write_count }
-        assert{ @i.num_errors > prev_num_errors }
+        assert{ @i.num_retries > prev_num_retries }
 
         prev_write_count = @i.write_count
-        prev_num_errors = @i.num_errors
+        prev_num_retries = @i.num_retries
       end
 
       assert{ @i.buffer.queue.size == 2 }
       assert{ @i.retry.steps > 10 }
       assert{ now > first_failure + 360 }
+      # The retry limit is never reached with retry_forever
+      assert_equal 0, @i.num_errors
     end
   end
 
@@ -941,26 +1028,27 @@ class BufferedOutputRetryTest < Test::Unit::TestCase
       @i.enqueue_thread_wait
 
       @i.flush_thread_wakeup
-      waiting(4){ Thread.pass until @i.write_count > 0 && @i.num_errors > 0 }
+      waiting(4){ Thread.pass until @i.write_count > 0 && @i.num_retries > 0 }
       waiting(4) do
         state = @i.instance_variable_get(:@output_flush_threads).first
         state.thread.status == 'sleep'
       end
 
       assert(@i.write_count > 0)
-      assert(@i.num_errors > 0)
+      assert(@i.num_retries > 0)
 
       now = @i.next_flush_time
       Timecop.freeze( now )
       @i.flush_thread_wakeup
-      waiting(4){ Thread.pass until @i.write_count > 1 && @i.num_errors > 1 }
+      waiting(4){ Thread.pass until @i.write_count > 1 && @i.num_retries > 1 }
       waiting(4) do
         state = @i.instance_variable_get(:@output_flush_threads).first
         state.thread.status == 'sleep'
       end
 
       assert(@i.write_count > 1)
-      assert(@i.num_errors > 1)
+      assert(@i.num_retries > 1)
+      assert_equal 0, @i.num_errors
     end
   end
 end
