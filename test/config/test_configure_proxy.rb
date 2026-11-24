@@ -177,6 +177,7 @@ module Fluent::Config
           alias: [:alias, :alias_name_in_config],
           secret: [:secret, true],
           skip_accessor: [:skip_accessor, true],
+          allow_nil: [:allow_nil, true],
           deprecated: [:deprecated, 'it is deprecated'],
           obsoleted: [:obsoleted, 'it is obsoleted'],
           desc: [:desc, "description"],

@@ -88,7 +88,7 @@ module Fluent
       # time : type[, format, timezone] -> type should be a valid "time_type"(string/unixtime/float)
       #      : format[, timezone]
 
-      config_param :time_key, :string, default: nil
+      config_param :time_key, :string, default: nil, allow_nil: true
       config_param :null_value_pattern, :regexp, default: nil
       config_param :null_empty_string, :bool, default: false
       config_param :estimate_current_event, :bool, default: true

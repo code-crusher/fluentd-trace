@@ -196,6 +196,11 @@ module ConfigurableSpec
     config_param :name, :string, default: 'example7', skip_accessor: true
   end
 
+  class ExampleWithAllowNil
+    include Fluent::Configurable
+    config_param :name, :string, default: 'example8', allow_nil: true
+  end
+
   class ExampleWithCustomSection
     include Fluent::Configurable
     config_param :name_param, :string
@@ -646,6 +651,19 @@ module Fluent::Config
           conf = config_element("", "", {"name5" => nil})
           obj.configure(conf)
           assert_nil obj.name5
+        end
+
+        test 'set nil for a parameter which allows nil despite a non-nil default value' do
+          obj = ConfigurableSpec::ExampleWithAllowNil.new
+          conf = config_element("", "", {"name" => nil})
+          obj.configure(conf)
+          assert_nil obj.name
+        end
+
+        test 'keep the default value for a parameter which allows nil if it is not specified' do
+          obj = ConfigurableSpec::ExampleWithAllowNil.new
+          obj.configure(config_element("", "", {}))
+          assert_equal 'example8', obj.name
         end
 
         test 'set nil for parameters whose default values are overwritten by nil' do
@@ -1533,6 +1551,20 @@ module Fluent::Config
           class InvalidSkipAccessor2Class
             include Fluent::Configurable
             config_param :key, :string, default: '', skip_accessor: 'yes'
+          end
+        end
+      end
+      test 'allow_nil must be true or false if specified' do
+        assert_raise ArgumentError.new("key: allow_nil must be true or false, but NilClass") do
+          class InvalidAllowNilClass
+            include Fluent::Configurable
+            config_param :key, :string, default: '', allow_nil: nil
+          end
+        end
+        assert_raise ArgumentError.new("key: allow_nil must be true or false, but String") do
+          class InvalidAllowNil2Class
+            include Fluent::Configurable
+            config_param :key, :string, default: '', allow_nil: 'yes'
           end
         end
       end

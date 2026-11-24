@@ -232,7 +232,7 @@ module Fluent
         end
         kwargs.each_key do |key|
           case key
-          when :default, :alias, :secret, :skip_accessor, :deprecated, :obsoleted, :desc
+          when :default, :alias, :secret, :skip_accessor, :allow_nil, :deprecated, :obsoleted, :desc
             # valid for all types
           when :list
             raise ArgumentError, ":list is valid only for :enum type, but #{type}: #{name}" if type != :enum
@@ -281,6 +281,7 @@ module Fluent
         option_value_type!(name, opts, :symbolize_keys, type: :boolean)
         option_value_type!(name, opts, :value_type, Symbol) # hash, array
         option_value_type!(name, opts, :skip_accessor, type: :boolean)
+        option_value_type!(name, opts, :allow_nil, type: :boolean)
 
         if opts.has_key?(:default)
           config_set_default(name, opts[:default])

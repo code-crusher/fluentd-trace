@@ -219,6 +219,21 @@ class RegexpParserTest < ::Test::Unit::TestCase
       end
     end
 
+    def test_parse_without_time_key
+      conf = <<~CONF
+        expression /^time:(?<time>\\S*) host:(?<host>\\S*)$/
+        time_key "\#{use_nil}"
+      CONF
+      d = create_driver(conf)
+      d.instance.parse('time:{begin:1} host:example.com') do |time, record|
+        assert_not_nil time, "parser puts current time without time input"
+        assert_equal({
+                       'time' => '{begin:1}',
+                       'host' => 'example.com',
+                     }, record)
+      end
+    end
+
     def test_parse_without_time
       time_at_start = Time.now.to_i
       text = "tagomori_satoshi tagomoris 34\n"

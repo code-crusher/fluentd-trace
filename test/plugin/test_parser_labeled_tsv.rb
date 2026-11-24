@@ -88,6 +88,18 @@ class LabeledTSVParserTest < ::Test::Unit::TestCase
     }
   end
 
+  def test_parse_without_time_key
+    parser = Fluent::Test::Driver::Parser.new(Fluent::Plugin::LabeledTSVParser)
+    parser.configure("time_key \"\#{use_nil}\"")
+    parser.instance.parse("time:{begin:1}\thost:192.168.0.1") { |time, record|
+      assert_not_nil time, "parser puts current time without time input"
+      assert_equal({
+                     'time' => '{begin:1}',
+                     'host' => '192.168.0.1',
+                   }, record)
+    }
+  end
+
   def test_parse_with_keep_time_key
     parser = Fluent::Test::Driver::Parser.new(Fluent::Plugin::LabeledTSVParser)
     parser.configure(

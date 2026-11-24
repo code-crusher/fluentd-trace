@@ -491,6 +491,27 @@ class HttpInputTest < Test::Unit::TestCase
     assert_equal_event_time time, d.events[1][1]
   end
 
+  def test_multi_json_with_disabled_time_key
+    d = create_driver(config + %[
+      <parse>
+        time_key "\#{use_nil}"
+      </parse>
+    ])
+
+    records = [{"a" => 1, "time" => {"begin" => 1611709938020}},
+               {"a" => 2, "time" => {"begin" => 1611710938020}}]
+    tag = "tag1"
+    res_codes = []
+    d.run(expect_records: 2, timeout: 5) do
+      res = post("/#{tag}", {"json" => records.to_json})
+      res_codes << res.code
+    end
+    assert_equal ["200"], res_codes
+    assert_equal 2, d.events.size
+    assert_equal records[0], d.events[0][2]
+    assert_equal records[1], d.events[1][2]
+  end
+
   def test_multi_json_with_nonexistent_time_key
     d = create_driver(config + %[
       <parse>

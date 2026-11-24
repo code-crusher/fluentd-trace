@@ -157,6 +157,30 @@ class JsonParserTest < ::Test::Unit::TestCase
   end
 
   data('oj' => 'oj', 'yajl' => 'yajl')
+  def test_parse_without_time_key(data)
+    @parser.configure("json_parser #{data}\ntime_key \"\#{use_nil}\"")
+    @parser.instance.parse('{"time":{"begin":1611709938020},"k":"v"}') { |time, record|
+      assert_not_nil time, "parser puts current time without time input"
+      assert_equal({
+                     'time' => {'begin' => 1611709938020},
+                     'k' => 'v',
+                   }, record)
+    }
+  end
+
+  data('oj' => 'oj', 'yajl' => 'yajl')
+  def test_parse_without_time_key_does_not_use_a_field_named_use_nil(data)
+    @parser.configure("json_parser #{data}\ntime_key \"\#{use_nil}\"")
+    @parser.instance.parse('{"use_nil":"not-a-time","k":"v"}') { |time, record|
+      assert_not_nil time
+      assert_equal({
+                     'use_nil' => 'not-a-time',
+                     'k' => 'v',
+                   }, record)
+    }
+  end
+
+  data('oj' => 'oj', 'yajl' => 'yajl')
   def test_parse_float_time(data)
     parser = Fluent::Test::Driver::Parser.new(Fluent::Plugin::JSONParser)
     parser.configure('json_parser' => data)
